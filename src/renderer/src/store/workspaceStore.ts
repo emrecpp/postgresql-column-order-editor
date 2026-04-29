@@ -358,6 +358,59 @@ export function setSelectedColumnName(name: string | null): void {
     setWorkspacePatch({selectedColumnName: name})
 }
 
+export function handleColumnReorder(
+    columnName: string,
+    targetColumnName: string,
+    position: 'before' | 'after'
+): void {
+    workspaceStore.set((state) => {
+        if (
+            !state.snapshot ||
+            state.busy === 'applying' ||
+            state.busy === 'connecting' ||
+            state.busy === 'switchingTarget' ||
+            state.busy === 'saving'
+        ) {
+            return state
+        }
+
+        const sourceIndex = state.columns.findIndex((column) => column.name === columnName)
+        const targetIndex = state.columns.findIndex((column) => column.name === targetColumnName)
+
+        if (sourceIndex === -1 || targetIndex === -1) {
+            return state
+        }
+
+        let nextIndex = targetIndex + (position === 'after' ? 1 : 0)
+
+        if (sourceIndex < nextIndex) {
+            nextIndex -= 1
+        }
+
+        if (nextIndex === sourceIndex) {
+            return {
+                ...state,
+                selectedColumnName: columnName
+            }
+        }
+
+        const nextColumns = [...state.columns]
+        const [movedColumn] = nextColumns.splice(sourceIndex, 1)
+
+        if (!movedColumn) {
+            return state
+        }
+
+        nextColumns.splice(nextIndex, 0, movedColumn)
+
+        return {
+            ...state,
+            columns: nextColumns,
+            selectedColumnName: columnName
+        }
+    })
+}
+
 export function openCreateDialog(): void {
     workspaceStore.set((state) => ({
         ...state,

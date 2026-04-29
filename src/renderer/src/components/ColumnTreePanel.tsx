@@ -1,4 +1,5 @@
 import {getColumnTypeIconClassName, getColumnTypeMeta} from '@renderer/lib/columnType'
+import {filterDatabaseSchemasByQuery} from '@renderer/lib/workspace'
 import {
     badgeClass,
     buttonGhostClass,
@@ -6,6 +7,7 @@ import {
     buttonSquareClass,
     cardPanelClass,
     cn,
+    inputClass,
     panelSubtitleClass,
     panelTitleClass,
     pillClass,
@@ -15,6 +17,7 @@ import {
 import {
     applyReorder,
     handleColumnMove,
+    handleColumnReorder,
     handleConnectionDatabaseSelect,
     handleRefresh,
     loadConnectionDatabases,
@@ -25,9 +28,37 @@ import {
     toggleSchema,
     workspaceStore
 } from '@renderer/store/workspaceStore'
+import {
+    closestCenter,
+    DndContext,
+    DragOverlay,
+    PointerSensor,
+    type DragEndEvent,
+    type DragStartEvent,
+    useSensor,
+    useSensors
+} from '@dnd-kit/core'
+import {
+    SortableContext,
+    useSortable,
+    verticalListSortingStrategy
+} from '@dnd-kit/sortable'
+import {CSS} from '@dnd-kit/utilities'
+import type {ColumnInfo} from '@shared/contracts'
 import {useShallow, useStoreValue} from '@simplestack/store/react'
-import {ArrowDown, ArrowUp, ChevronDown, ChevronRight, Database, Folders, RefreshCcw, Save, Table2} from 'lucide-react'
-import {type KeyboardEvent, useEffect, useRef} from 'react'
+import {
+    ArrowDown,
+    ArrowUp,
+    ChevronDown,
+    ChevronRight,
+    Database,
+    Folders,
+    RefreshCcw,
+    Save,
+    Search,
+    Table2
+} from 'lucide-react'
+import {type KeyboardEvent, useEffect, useMemo, useRef, useState} from 'react'
 import TargetDropdown from './TargetDropdown'
 import {CheckboxField} from './ui/checkbox'
 
@@ -60,11 +91,18 @@ function ColumnTreePanel() {
     const columnButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({})
     const focusTargetRef = useRef<string | null>(null)
     const availableSchemas = snapshot?.databaseTree.schemas ?? []
+    const [activeDragColumnName, setActiveDragColumnName] = useState<string | null>(null)
+    const [treeSearchQuery, setTreeSearchQuery] = useState('')
     const hasResolvedTarget = Boolean(snapshot?.target)
     const selectedSchemaNode =
         availableSchemas.find((schemaNode) => schemaNode.name === snapshot?.target?.schema) ??
         availableSchemas[0]
     const availableTables = selectedSchemaNode?.tables ?? []
+    const filteredTreeSchemas = useMemo(
+        () => filterDatabaseSchemasByQuery(availableSchemas, treeSearchQuery),
+        [availableSchemas, treeSearchQuery]
+    )
+    const searchActive = treeSearchQuery.trim().length > 0
     const disableMoveActions =
         busy === 'applying' ||
         busy === 'connecting' ||
@@ -77,6 +115,13 @@ function ColumnTreePanel() {
         meta: 'saved connection',
         value: databaseName
     }))
+    const sensors = useSensors(
+        useSensor(PointerSensor, {
+            activationConstraint: {
+                distance: 8
+            }
+        })
+    )
 
     const schemaOptions = availableSchemas.map((schemaNode) => ({
         meta: `${schemaNode.tables.length} tables`,
@@ -87,6 +132,12 @@ function ColumnTreePanel() {
         meta: selectedSchemaNode?.name ?? undefined,
         value: tableName
     }))
+    const activeDragColumn =
+        columns.find((column) => column.name === activeDragColumnName) ?? null
+
+    useEffect(() => {
+        setTreeSearchQuery('')
+    }, [snapshot?.session.id])
 
     useEffect(() => {
         if (!selectedColumnName) {
@@ -117,6 +168,43 @@ function ColumnTreePanel() {
     function focusColumn(name: string): void {
         focusTargetRef.current = name
         setSelectedColumnName(name)
+    }
+
+    function handleDragStart(event: DragStartEvent): void {
+        const columnName = String(event.active.id)
+
+        setActiveDragColumnName(columnName)
+        setSelectedColumnName(columnName)
+    }
+
+    function handleDragEnd(event: DragEndEvent): void {
+        const {active, over} = event
+
+        setActiveDragColumnName(null)
+
+        if (!over || active.id === over.id) {
+            return
+        }
+
+        const activeColumnName = String(active.id)
+        const overColumnName = String(over.id)
+        const activeIndex = columns.findIndex((column) => column.name === activeColumnName)
+        const overIndex = columns.findIndex((column) => column.name === overColumnName)
+
+        if (activeIndex === -1 || overIndex === -1) {
+            return
+        }
+
+        focusTargetRef.current = activeColumnName
+        handleColumnReorder(
+            activeColumnName,
+            overColumnName,
+            activeIndex < overIndex ? 'after' : 'before'
+        )
+    }
+
+    function handleDragCancel(): void {
+        setActiveDragColumnName(null)
     }
 
     function handleColumnKeyDown(
@@ -219,7 +307,7 @@ function ColumnTreePanel() {
                 <div className="flex min-w-0 flex-col gap-1">
                     <span className={sectionEyebrowClass}>COLUMN TREE</span>
                     <span className={panelTitleClass}>Column order</span>
-                    <span className={panelSubtitleClass}>Arrow keys navigate, Shift + arrows reorder</span>
+                    <span className={panelSubtitleClass}>Arrow keys navigate, Shift + arrows or drag to reorder</span>
                 </div>
 
                 <span className={pillClass}>{columns.length}</span>
@@ -297,11 +385,27 @@ function ColumnTreePanel() {
                         </div>
                     ) : (
                         <div className="flex flex-col gap-3">
-
+                            <label className="relative block">
+                                <Search
+                                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-studio-muted"
+                                    size={14}
+                                />
+                                <input
+                                    className={cn(inputClass, 'pl-9')}
+                                    onChange={(event) => setTreeSearchQuery(event.target.value)}
+                                    placeholder="Search schema or table"
+                                    type="text"
+                                    value={treeSearchQuery}
+                                />
+                            </label>
 
                             <div className="flex flex-col gap-2">
-                                {availableSchemas.map((schemaNode) => {
-                                    const isExpanded = expandedSchemas.includes(schemaNode.name)
+                                {filteredTreeSchemas.length === 0 ? (
+                                    <div className="grid min-h-24 place-items-center rounded-2xl border border-studio-border bg-studio-panel-soft p-5 text-center text-studio-muted">
+                                        No matching schemas or tables found.
+                                    </div>
+                                ) : filteredTreeSchemas.map((schemaNode) => {
+                                    const isExpanded = searchActive || expandedSchemas.includes(schemaNode.name)
 
                                     return (
                                         <div className="flex flex-col gap-1.5" key={schemaNode.name}>
@@ -313,7 +417,11 @@ function ColumnTreePanel() {
                                                         : 'border-studio-amber/15 bg-[linear-gradient(180deg,rgba(255,209,102,0.06),rgba(255,209,102,0.02))]'
                                                 )}
                                                 disabled={disableTreeSelection}
-                                                onClick={() => toggleSchema(schemaNode.name)}
+                                                onClick={() => {
+                                                    if (!searchActive) {
+                                                        toggleSchema(schemaNode.name)
+                                                    }
+                                                }}
                                                 type="button"
                                             >
                                                 <span className="inline-flex w-4 flex-none items-center justify-center text-studio-amber">
@@ -323,7 +431,9 @@ function ColumnTreePanel() {
                                                 <div className="flex min-w-0 flex-col gap-0.5">
                                                     <span className="truncate text-studio-amber">{schemaNode.name}</span>
                                                     <span className="text-xs text-studio-amber-soft">
-                                                        {schemaNode.tables.length} tables
+                                                        {schemaNode.tables.length === schemaNode.totalTableCount
+                                                            ? `${schemaNode.totalTableCount} tables`
+                                                            : `${schemaNode.tables.length} / ${schemaNode.totalTableCount} tables`}
                                                     </span>
                                                 </div>
                                             </button>
@@ -356,92 +466,51 @@ function ColumnTreePanel() {
                 ) : columns.length === 0 ? (
                     <div className="grid min-h-full place-items-center text-studio-muted">No columns found.</div>
                 ) : (
-                    <div className="flex flex-col gap-1.5">
-                        {columns.map((column, index) => {
-                            const isSelected = column.name === selectedColumnName
-                            const typeMeta = getColumnTypeMeta(column.dataType)
-                            const TypeIcon = typeMeta.icon
-                            const flags: string[] = []
-
-                            if (!column.nullable) {
-                                flags.push('NOT NULL')
-                            }
-
-                            if (column.isIdentity) {
-                                flags.push('IDENTITY')
-                            }
-
-                            if (column.isGenerated) {
-                                flags.push('GENERATED')
-                            }
-
-                            return (
-                                <div
-                                    className={cn(
-                                        'grid w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 rounded-[14px] border border-transparent bg-white/[0.03] px-3 py-2.5 transition duration-150 hover:border hover:border-gray-700/50 focus-within:ring-1 focus-within:ring-inset focus-within:ring-sky-300/20 max-[720px]:grid-cols-1',
-                                        isSelected && 'bg-white/[0.05]'
-                                    )}
-                                    key={column.name}
-                                >
-                                    <button
-                                        aria-pressed={isSelected}
-                                        className="grid w-full min-w-0 grid-cols-[42px_34px_minmax(0,1fr)] items-center gap-2.5 rounded-xl bg-transparent text-left text-studio-text outline-none"
-                                        onClick={() => setSelectedColumnName(column.name)}
-                                        onKeyDown={(event) => handleColumnKeyDown(event, index, column.name)}
-                                        ref={(element) => {
+                    <DndContext
+                        collisionDetection={closestCenter}
+                        onDragCancel={handleDragCancel}
+                        onDragEnd={handleDragEnd}
+                        onDragStart={handleDragStart}
+                        sensors={sensors}
+                    >
+                        <SortableContext
+                            items={columns.map((column) => column.name)}
+                            strategy={verticalListSortingStrategy}
+                        >
+                            <div className="flex flex-col gap-1.5">
+                                {columns.map((column, index) => (
+                                    <SortableColumnRow
+                                        column={column}
+                                        disableMoveActions={disableMoveActions}
+                                        index={index}
+                                        isSelected={column.name === selectedColumnName}
+                                        key={column.name}
+                                        onColumnKeyDown={(event) => handleColumnKeyDown(event, index, column.name)}
+                                        onColumnSelect={() => setSelectedColumnName(column.name)}
+                                        setButtonRef={(element) => {
                                             columnButtonRefs.current[column.name] = element
                                         }}
-                                        type="button"
-                                    >
-                                        <span className="text-[11px] tabular-nums leading-none text-studio-muted">
-                                            #{String(index + 1).padStart(2, '0')}
-                                        </span>
+                                        totalColumns={columns.length}
+                                    />
+                                ))}
+                            </div>
+                        </SortableContext>
 
-                                        <span className={getColumnTypeIconClassName(typeMeta.tone)}>
-                                            <TypeIcon size={14} />
-                                        </span>
-
-                                        <div className="flex min-w-0 flex-col gap-1">
-                                            <span className="break-words font-semibold leading-[1.35]">{column.name}</span>
-                                            <span className="break-words text-xs leading-[1.35] text-studio-muted">
-                                                {column.dataType}
-                                            </span>
-                                        </div>
-                                    </button>
-
-                                    <div className="flex flex-wrap items-center justify-end gap-1.5 max-[720px]:ml-[52px] max-[720px]:justify-start">
-                                        {flags.map((flag) => (
-                                            <span className={cn(badgeClass, 'bg-white/[0.04]')} key={flag}>
-                                                {flag}
-                                            </span>
-                                        ))}
-                                    </div>
-
-                                    <div className="flex flex-wrap items-center justify-end gap-1.5 max-[720px]:ml-[52px] max-[720px]:justify-start">
-                                        <button
-                                            aria-label={`Move ${column.name} up`}
-                                            className={buttonSquareClass}
-                                            disabled={disableMoveActions || index === 0}
-                                            onClick={() => handleColumnMove(column.name, 'move_up')}
-                                            type="button"
-                                        >
-                                            <ArrowUp size={14} />
-                                        </button>
-
-                                        <button
-                                            aria-label={`Move ${column.name} down`}
-                                            className={buttonSquareClass}
-                                            disabled={disableMoveActions || index === columns.length - 1}
-                                            onClick={() => handleColumnMove(column.name, 'move_down')}
-                                            type="button"
-                                        >
-                                            <ArrowDown size={14} />
-                                        </button>
-                                    </div>
-                                </div>
-                            )
-                        })}
-                    </div>
+                        <DragOverlay>
+                            {activeDragColumn ? (
+                                <ColumnRowCard
+                                    column={activeDragColumn}
+                                    disableMoveActions
+                                    index={Math.max(0, columns.findIndex((column) => column.name === activeDragColumn.name))}
+                                    isDragOverlay
+                                    isSelected
+                                    onColumnKeyDown={() => undefined}
+                                    onColumnSelect={() => undefined}
+                                    totalColumns={columns.length}
+                                />
+                            ) : null}
+                        </DragOverlay>
+                    </DndContext>
                 )}
             </div>
 
@@ -478,6 +547,139 @@ function ColumnTreePanel() {
                 </div>
             </div>
         </section>
+    )
+}
+
+interface ColumnRowCardProps {
+    column: ColumnInfo
+    disableMoveActions: boolean
+    index: number
+    isDragOverlay?: boolean
+    isSelected: boolean
+    onColumnKeyDown: (event: KeyboardEvent<HTMLButtonElement>) => void
+    onColumnSelect: () => void
+    setButtonRef?: (element: HTMLButtonElement | null) => void
+    totalColumns: number
+}
+
+function ColumnRowCard({
+    column,
+    disableMoveActions,
+    index,
+    isDragOverlay = false,
+    isSelected,
+    onColumnKeyDown,
+    onColumnSelect,
+    setButtonRef,
+    totalColumns
+}: ColumnRowCardProps) {
+    const typeMeta = getColumnTypeMeta(column.dataType)
+    const TypeIcon = typeMeta.icon
+    const flags: string[] = []
+
+    if (!column.nullable) {
+        flags.push('NOT NULL')
+    }
+
+    if (column.isIdentity) {
+        flags.push('IDENTITY')
+    }
+
+    if (column.isGenerated) {
+        flags.push('GENERATED')
+    }
+
+    return (
+        <div
+            className={cn(
+                'relative grid w-full cursor-grab touch-none grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 rounded-[14px] border border-transparent bg-white/[0.03] px-3 py-2.5 transition duration-200 ease-out hover:border hover:border-gray-700/50 active:cursor-grabbing focus-within:ring-1 focus-within:ring-inset focus-within:ring-sky-300/20 max-[720px]:grid-cols-1',
+                isSelected && 'bg-white/[0.05]',
+                isDragOverlay &&
+                    'cursor-grabbing border-studio-amber/40 bg-[linear-gradient(180deg,rgba(255,209,102,0.18),rgba(255,209,102,0.08))] shadow-[0_18px_40px_rgba(0,0,0,0.34)] rotate-[1deg]'
+            )}
+        >
+            <button
+                aria-pressed={isSelected}
+                className="grid w-full min-w-0 grid-cols-[42px_34px_minmax(0,1fr)] items-center gap-2.5 rounded-xl bg-transparent text-left text-studio-text outline-none"
+                onClick={onColumnSelect}
+                onKeyDown={onColumnKeyDown}
+                ref={setButtonRef}
+                type="button"
+            >
+                <span className="text-[11px] tabular-nums leading-none text-studio-muted">
+                    #{String(index + 1).padStart(2, '0')}
+                </span>
+
+                <span className={getColumnTypeIconClassName(typeMeta.tone)}>
+                    <TypeIcon size={14} />
+                </span>
+
+                <div className="flex min-w-0 flex-col gap-1">
+                    <span className="break-words font-semibold leading-[1.35]">{column.name}</span>
+                    <span className="break-words text-xs leading-[1.35] text-studio-muted">
+                        {column.dataType}
+                    </span>
+                </div>
+            </button>
+
+            <div className="flex flex-wrap items-center justify-end gap-1.5 max-[720px]:ml-[52px] max-[720px]:justify-start">
+                {flags.map((flag) => (
+                    <span className={cn(badgeClass, 'bg-white/[0.04]')} key={flag}>
+                        {flag}
+                    </span>
+                ))}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-end gap-1.5 max-[720px]:ml-[52px] max-[720px]:justify-start">
+                <button
+                    aria-label={`Move ${column.name} up`}
+                    className={buttonSquareClass}
+                    disabled={disableMoveActions || index === 0 || isDragOverlay}
+                    onClick={() => handleColumnMove(column.name, 'move_up')}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    type="button"
+                >
+                    <ArrowUp size={14} />
+                </button>
+
+                <button
+                    aria-label={`Move ${column.name} down`}
+                    className={buttonSquareClass}
+                    disabled={disableMoveActions || index === totalColumns - 1 || isDragOverlay}
+                    onClick={() => handleColumnMove(column.name, 'move_down')}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    type="button"
+                >
+                    <ArrowDown size={14} />
+                </button>
+            </div>
+        </div>
+    )
+}
+
+interface SortableColumnRowProps extends ColumnRowCardProps {}
+
+function SortableColumnRow(props: SortableColumnRowProps) {
+    const {attributes, isDragging, listeners, setNodeRef, transform, transition} = useSortable({
+        disabled: props.disableMoveActions,
+        id: props.column.name
+    })
+
+    return (
+        <div
+            className={cn(
+                isDragging && 'opacity-30'
+            )}
+            ref={setNodeRef}
+            style={{
+                transform: CSS.Transform.toString(transform),
+                transition
+            }}
+            {...attributes}
+            {...listeners}
+        >
+            <ColumnRowCard {...props} />
+        </div>
     )
 }
 

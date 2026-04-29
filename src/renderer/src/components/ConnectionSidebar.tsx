@@ -3,10 +3,11 @@ import {
     buttonSquareClass,
     cn,
     emptyStateClass,
+    inputClass,
     scrollbarClass,
     shellPanelClass
 } from '@renderer/lib/ui'
-import {tableMeta} from '@renderer/lib/workspace'
+import {filterDatabaseSchemasByQuery, tableMeta} from '@renderer/lib/workspace'
 import {
     handleConnectionPress,
     handleDisconnect,
@@ -32,6 +33,7 @@ import {
     PencilLine,
     PlugZap,
     Plus,
+    Search,
     Table2,
     Trash2,
     Unplug
@@ -69,24 +71,32 @@ function ConnectionSidebar() {
     const [focusedSchemaName, setFocusedSchemaName] = useState<string | null>(null)
     const [actionsMenuOpen, setActionsMenuOpen] = useState(false)
     const [appVersion, setAppVersion] = useState<string | null>(null)
+    const [tableSearchQuery, setTableSearchQuery] = useState('')
     const [connectionContextMenu, setConnectionContextMenu] = useState<{
         connection: StoredConnection
         x: number
         y: number
     } | null>(null)
+    const filteredTreeSchemas = useMemo(
+        () => filterDatabaseSchemasByQuery(treeSchemas, tableSearchQuery),
+        [tableSearchQuery, treeSchemas]
+    )
+    const searchActive = tableSearchQuery.trim().length > 0
 
     const activeSchemaName =
         focusedSchemaName ?? snapshot?.target?.schema ?? treeSchemas[0]?.name ?? null
 
     const orderedSchemas = useMemo(() => {
+        const sourceSchemas = filteredTreeSchemas
+
         if (!activeSchemaName) {
-            return treeSchemas
+            return sourceSchemas
         }
 
-        const activeSchema = treeSchemas.find((schemaNode) => schemaNode.name === activeSchemaName)
-        const remainingSchemas = treeSchemas.filter((schemaNode) => schemaNode.name !== activeSchemaName)
-        return activeSchema ? [activeSchema, ...remainingSchemas] : treeSchemas
-    }, [activeSchemaName, treeSchemas])
+        const activeSchema = sourceSchemas.find((schemaNode) => schemaNode.name === activeSchemaName)
+        const remainingSchemas = sourceSchemas.filter((schemaNode) => schemaNode.name !== activeSchemaName)
+        return activeSchema ? [activeSchema, ...remainingSchemas] : sourceSchemas
+    }, [activeSchemaName, filteredTreeSchemas])
 
     useEffect(() => {
         window.api
@@ -107,6 +117,10 @@ function ConnectionSidebar() {
 
         setFocusedSchemaName(snapshot.target?.schema ?? treeSchemas[0]?.name ?? null)
     }, [snapshot?.target?.schema, snapshot, treeSchemas])
+
+    useEffect(() => {
+        setTableSearchQuery('')
+    }, [snapshot?.session.id])
 
     useEffect(() => {
         if (!activeSchemaName) {
@@ -406,14 +420,33 @@ function ConnectionSidebar() {
                             No schemas or tables found.
                         </div>
                     ) : (
-                        <div
-                            className={cn(
-                                'py-1 flex flex-1 flex-col gap-2 overflow-y-auto pr-1 max-[980px]:max-h-[320px]',
-                                scrollbarClass
-                            )}
-                        >
-                            {orderedSchemas.map((schemaNode) => {
-                                const isExpanded = expandedSchemas.includes(schemaNode.name)
+                        <div className="flex min-h-0 flex-1 flex-col gap-2">
+                            <label className="relative block">
+                                <Search
+                                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-studio-muted"
+                                    size={14}
+                                />
+                                <input
+                                    className={cn(inputClass, 'pl-9')}
+                                    onChange={(event) => setTableSearchQuery(event.target.value)}
+                                    placeholder="Search schema or table"
+                                    type="text"
+                                    value={tableSearchQuery}
+                                />
+                            </label>
+
+                            <div
+                                className={cn(
+                                    'py-1 flex flex-1 flex-col gap-2 overflow-y-auto pr-1 max-[980px]:max-h-[320px]',
+                                    scrollbarClass
+                                )}
+                            >
+                                {orderedSchemas.length === 0 ? (
+                                    <div className="grid min-h-24 place-items-center rounded-2xl border border-studio-border bg-studio-panel-soft p-5 text-center text-studio-muted">
+                                        No matching schemas or tables found.
+                                    </div>
+                                ) : orderedSchemas.map((schemaNode) => {
+                                const isExpanded = searchActive || expandedSchemas.includes(schemaNode.name)
                                 const isFocused = activeSchemaName === schemaNode.name
 
                                 return (
@@ -434,7 +467,10 @@ function ConnectionSidebar() {
                                             disabled={disableTargetTreeActions}
                                             onClick={() => {
                                                 setFocusedSchemaName(schemaNode.name)
-                                                toggleSchema(schemaNode.name)
+
+                                                if (!searchActive) {
+                                                    toggleSchema(schemaNode.name)
+                                                }
                                             }}
                                             type="button"
                                         >
@@ -445,12 +481,14 @@ function ConnectionSidebar() {
                                             <div className="flex min-w-0 flex-col gap-0.5">
                                                 <span className="truncate text-studio-amber">{schemaNode.name}</span>
                                                 <span className="text-xs text-studio-amber-soft">
-                                                    {schemaNode.tables.length} tables
+                                                    {schemaNode.tables.length === schemaNode.totalTableCount
+                                                        ? `${schemaNode.totalTableCount} tables`
+                                                        : `${schemaNode.tables.length} / ${schemaNode.totalTableCount} tables`}
                                                 </span>
                                             </div>
                                         </button>
 
-                                        {isExpanded ? (
+                                        {searchActive || isExpanded ? (
                                             <div className="flex flex-col gap-1.5 pl-[18px]">
                                                 {schemaNode.tables.map((table) => {
                                                     const isActive =
@@ -482,7 +520,8 @@ function ConnectionSidebar() {
                                         ) : null}
                                     </div>
                                 )
-                            })}
+                                })}
+                            </div>
                         </div>
                     )}
                 </section>
