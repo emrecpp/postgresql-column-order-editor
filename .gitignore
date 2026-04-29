@@ -1,0 +1,83 @@
+release/*
+
+.next/*
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+/renderer/.next/
+/renderer/out/
+
+# production
+/build
+/app
+/dist
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# local env files
+.env*.local
+.env
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# IDE
+.idea
+*.swp
+*.swo
+
+# Python - exclude cache and temporary files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+# Generated resources folder (created during build)
+/resources/
+# Python installer (downloaded during build)
+/python-installer.exe
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Logs
+logs
+*.log
+
+# Electron build artifacts
+/out/
+/dist/
+/app/
+
+# Temporary files
+*.tmp
+*.temp
+game-update-settings.json
+
+acikkod
+acikkod2
+sifresiz
+sifreli
