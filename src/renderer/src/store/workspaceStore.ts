@@ -7,6 +7,7 @@ import {
     type StoredSession as StoredConnection,
     type TableSnapshot
 } from '@shared/contracts'
+import {normalizeSessionIdsByHost} from '@shared/sessionOrder'
 import {
     sessionSaveSchema as connectionSaveSchema,
     sessionConnectionTestSchema as connectionTestSchema
@@ -85,6 +86,7 @@ const runtime = {
     hasBootstrapped: false,
     connectionDatabasesSignature: null as string | null,
     databaseAutoFetchSignature: null as string | null,
+    preferencesSaveSequence: 0,
     previousConnectionSignature: null as string | null
 }
 
@@ -139,6 +141,24 @@ function setWorkspacePatch(patch: Partial<WorkspaceState>): void {
         ...state,
         ...patch
     }))
+}
+
+function getConnectionsByIds(
+    connectionIds: string[],
+    connections: StoredConnection[]
+): StoredConnection[] {
+    const connectionMap = new Map(connections.map((connection) => [connection.id, connection]))
+
+    return connectionIds
+        .map((connectionId) => connectionMap.get(connectionId))
+        .filter((connection): connection is StoredConnection => connection !== undefined)
+}
+
+function areConnectionIdsEqual(left: string[], right: string[]): boolean {
+    return (
+        left.length === right.length &&
+        left.every((connectionId, index) => connectionId === right[index])
+    )
 }
 
 export function selectSelectedConnection(state: WorkspaceState): StoredConnection | null {
@@ -287,9 +307,10 @@ async function bootstrapWorkspace(): Promise<void> {
     setWorkspacePatch({busy: 'loading'})
 
     try {
-        const [savedConnections, lastConnectionId] = await Promise.all([
+        const [savedConnections, lastConnectionId, preferences] = await Promise.all([
             window.api.listSessions(),
-            window.api.getLastSessionId()
+            window.api.getLastSessionId(),
+            window.api.getWorkspacePreferences()
         ])
 
         const initial =
@@ -300,6 +321,7 @@ async function bootstrapWorkspace(): Promise<void> {
                 ...state,
                 busy: 'idle',
                 connections: savedConnections,
+                deleteBackupTableAfterReorder: preferences.deleteBackupTableAfterReorder,
                 selectedConnectionId: initial?.id ?? null
             })
         )
@@ -328,7 +350,32 @@ export async function initializeWorkspace(): Promise<void> {
 }
 
 export function setDeleteBackupTableAfterReorder(checked: boolean): void {
+    const previousValue = workspaceStore.get().deleteBackupTableAfterReorder
+    const saveSequence = ++runtime.preferencesSaveSequence
+
     setWorkspacePatch({deleteBackupTableAfterReorder: checked})
+
+    window.api
+        .saveWorkspacePreferences({
+            deleteBackupTableAfterReorder: checked
+        })
+        .then((preferences) => {
+            if (saveSequence !== runtime.preferencesSaveSequence) {
+                return
+            }
+
+            setWorkspacePatch({
+                deleteBackupTableAfterReorder: preferences.deleteBackupTableAfterReorder
+            })
+        })
+        .catch((error) => {
+            if (saveSequence !== runtime.preferencesSaveSequence) {
+                return
+            }
+
+            setWorkspacePatch({deleteBackupTableAfterReorder: previousValue})
+            showNotice('error', getErrorMessage(error))
+        })
 }
 
 export function setDeleteDialogOpen(open: boolean): void {
@@ -466,6 +513,51 @@ export function selectConnection(connectionId: string): void {
             selectedConnectionId: connectionId
         })
     )
+}
+
+export async function handleConnectionOrderChange(connectionIds: string[]): Promise<void> {
+    const state = workspaceStore.get()
+
+    if (state.busy !== 'idle' || state.connections.length === 0) {
+        return
+    }
+
+    const nextConnectionIds = normalizeSessionIdsByHost(connectionIds, state.connections)
+    const currentConnectionIds = state.connections.map((connection) => connection.id)
+
+    if (areConnectionIdsEqual(currentConnectionIds, nextConnectionIds)) {
+        return
+    }
+
+    const nextConnections = getConnectionsByIds(nextConnectionIds, state.connections)
+
+    if (nextConnections.length !== state.connections.length) {
+        return
+    }
+
+    workspaceStore.set((currentState) =>
+        syncSelectedConnectionState(currentState, {
+            ...currentState,
+            busy: 'saving',
+            connections: nextConnections
+        })
+    )
+
+    try {
+        const savedConnections = await window.api.reorderSessions(nextConnectionIds)
+
+        workspaceStore.set((currentState) =>
+            syncSelectedConnectionState(currentState, {
+                ...currentState,
+                connections: savedConnections
+            })
+        )
+    } catch (error) {
+        showNotice('error', getErrorMessage(error))
+        await refreshConnections(state.selectedConnectionId ?? undefined)
+    } finally {
+        setWorkspacePatch({busy: 'idle'})
+    }
 }
 
 export async function refreshConnections(preferredConnectionId?: string): Promise<void> {

@@ -3,7 +3,8 @@ import type {
     ConnectRequest,
     PreviewColumnOrderRequest,
     ReorderRequest,
-    SessionDraft
+    SessionDraft,
+    WorkspacePreferences
 } from '@shared/contracts'
 import {
     connectRequestSchema,
@@ -11,7 +12,9 @@ import {
     previewColumnOrderRequestSchema,
     reorderRequestSchema,
     sessionConnectionTestSchema,
-    sessionSaveSchema
+    sessionOrderSchema,
+    sessionSaveSchema,
+    workspacePreferencesSchema
 } from '@shared/validation'
 import {app, BrowserWindow, dialog, ipcMain, shell} from 'electron'
 import {join} from 'node:path'
@@ -26,15 +29,32 @@ import {
     exportSessionsToPath,
     getLastSessionId,
     getSessionById,
+    getWorkspacePreferences,
     importSessionsFromPath,
     listSessions,
     markLastSession,
-    saveSession
+    reorderSessions,
+    saveSession,
+    saveWorkspacePreferences
 } from './storage'
 import {installStartupUpdateIfAvailable, setupAutoUpdater} from './updater'
 
 function normalizeIpcError(error: unknown): never {
     throw new Error(getValidationErrorMessage(error, 'An unexpected error occurred.'))
+}
+
+function getLocalDateStamp(): string {
+    const date = new Date()
+
+    return [
+        date.getFullYear(),
+        String(date.getMonth() + 1).padStart(2, '0'),
+        String(date.getDate()).padStart(2, '0')
+    ].join('-')
+}
+
+function getDefaultConnectionExportFileName(): string {
+    return `connections-${getLocalDateStamp()}.json`
 }
 
 function createWindow(): BrowserWindow {
@@ -94,6 +114,14 @@ function registerIpcHandlers(): void {
         }
     })
 
+    ipcMain.handle('sessions:reorder', async (_, sessionIds: string[]) => {
+        try {
+            return await reorderSessions(sessionOrderSchema.parse(sessionIds))
+        } catch (error) {
+            normalizeIpcError(error)
+        }
+    })
+
     ipcMain.handle('sessions:last', async () => {
         try {
             return await getLastSessionId()
@@ -102,17 +130,34 @@ function registerIpcHandlers(): void {
         }
     })
 
+    ipcMain.handle('workspace:preferences:get', async () => {
+        try {
+            return await getWorkspacePreferences()
+        } catch (error) {
+            normalizeIpcError(error)
+        }
+    })
+
+    ipcMain.handle('workspace:preferences:save', async (_, input: WorkspacePreferences) => {
+        try {
+            return await saveWorkspacePreferences(workspacePreferencesSchema.parse(input))
+        } catch (error) {
+            normalizeIpcError(error)
+        }
+    })
+
     ipcMain.handle('sessions:export', async () => {
         try {
             const window = BrowserWindow.getFocusedWindow()
+            const defaultPath = getDefaultConnectionExportFileName()
             const result = window
                 ? await dialog.showSaveDialog(window, {
-                    defaultPath: `postgresql-column-order-editor-connections-${new Date().toISOString().slice(0, 10)}.json`,
+                    defaultPath,
                     filters: [{name: 'JSON', extensions: ['json']}],
                     title: 'Export connections'
                 })
                 : await dialog.showSaveDialog({
-                    defaultPath: `postgresql-column-order-editor-connections-${new Date().toISOString().slice(0, 10)}.json`,
+                    defaultPath,
                     filters: [{name: 'JSON', extensions: ['json']}],
                     title: 'Export connections'
                 })

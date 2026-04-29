@@ -1,11 +1,18 @@
 import {
     DEFAULT_SESSION_DRAFT,
+    DEFAULT_WORKSPACE_PREFERENCES,
     type SessionDraft,
     type SessionExportResult,
     type SessionFile,
     type SessionImportResult,
-    type StoredSession
+    type StoredSession,
+    type WorkspacePreferences
 } from '@shared/contracts'
+import {
+    areSessionOrdersEqual,
+    normalizeSessionIdsByHost,
+    normalizeSessionsByHost
+} from '@shared/sessionOrder'
 import {
     getValidationErrorMessage,
     importedSessionFileSchema,
@@ -13,7 +20,8 @@ import {
     sessionDraftSchema,
     sessionFileSchema,
     sessionSaveSchema,
-    storedSessionSchema
+    storedSessionSchema,
+    workspacePreferencesSchema
 } from '@shared/validation'
 import {app, safeStorage} from 'electron'
 import {
@@ -33,15 +41,22 @@ interface PersistedSession extends Omit<StoredSession, 'password'> {
 interface PersistedSessionFile {
     sessions: PersistedSession[]
     lastSessionId: string | null
+    preferences: WorkspacePreferences
 }
+
+type PortableSession = Omit<
+    StoredSession,
+    'id' | 'createdAt' | 'updatedAt' | 'schema' | 'table'
+> &
+    Partial<Pick<StoredSession, 'createdAt' | 'updatedAt'>> & {
+        order: number
+    }
 
 interface PortableSessionFile {
     app: 'postgresql-column-order-editor'
     exportedAt: string
-    passwordEncoding: 'app-encrypted'
-    passwordsIncluded: true
     version: 1
-    sessions: Array<Omit<StoredSession, 'id' | 'createdAt' | 'updatedAt'> & Partial<Pick<StoredSession, 'createdAt' | 'updatedAt'>>>
+    sessions: PortableSession[]
 }
 
 const safeStoragePrefix = 'enc:v1:'
@@ -49,12 +64,39 @@ const fallbackPrefix = 'fb:v1:'
 
 const defaultStore = (): SessionFile => ({
     sessions: [],
-    lastSessionId: null
+    lastSessionId: null,
+    preferences: {...DEFAULT_WORKSPACE_PREFERENCES}
 })
 
 const getStoragePath = (): string => join(app.getPath('userData'), 'sessions.json')
 
 const normalizeText = (value: string): string => value.trim()
+
+function padDatePart(value: number, size = 2): string {
+    return String(value).padStart(size, '0')
+}
+
+function formatLocalTimestamp(input: Date | string = new Date()): string {
+    const date = input instanceof Date ? input : new Date(input)
+
+    if (Number.isNaN(date.getTime())) {
+        return typeof input === 'string' ? input : formatLocalTimestamp(new Date())
+    }
+
+    const offsetMinutes = -date.getTimezoneOffset()
+    const offsetSign = offsetMinutes >= 0 ? '+' : '-'
+    const absoluteOffsetMinutes = Math.abs(offsetMinutes)
+    const offsetHours = Math.floor(absoluteOffsetMinutes / 60)
+    const offsetRemainderMinutes = absoluteOffsetMinutes % 60
+
+    return [
+        `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}`,
+        'T',
+        `${padDatePart(date.getHours())}:${padDatePart(date.getMinutes())}:${padDatePart(date.getSeconds())}`,
+        `.${padDatePart(date.getMilliseconds(), 3)}`,
+        `${offsetSign}${padDatePart(offsetHours)}:${padDatePart(offsetRemainderMinutes)}`
+    ].join('')
+}
 
 const deriveName = (input: SessionDraft): string => {
     if (input.database) {
@@ -122,22 +164,19 @@ function decryptPassword(password: string): string {
 function toPortableStore(store: SessionFile): PortableSessionFile {
     return {
         app: 'postgresql-column-order-editor',
-        exportedAt: new Date().toISOString(),
-        passwordEncoding: 'app-encrypted',
-        passwordsIncluded: true,
+        exportedAt: formatLocalTimestamp(),
         version: 1,
-        sessions: store.sessions.map((session) => ({
+        sessions: store.sessions.map((session, index) => ({
             name: session.name,
             host: session.host,
+            order: index,
             port: session.port,
             username: session.username,
             password: session.password ? encryptPassword(session.password) : '',
             database: session.database,
-            schema: '',
-            table: '',
             ssl: session.ssl,
-            createdAt: session.createdAt,
-            updatedAt: session.updatedAt
+            createdAt: formatLocalTimestamp(session.createdAt),
+            updatedAt: formatLocalTimestamp(session.updatedAt)
         }))
     }
 }
@@ -220,9 +259,16 @@ async function readStore(): Promise<SessionFile> {
             }
         })
 
+        const orderedSessions = normalizeSessionsByHost(sessions)
+
+        if (!areSessionOrdersEqual(sessions, orderedSessions)) {
+            shouldRewrite = true
+        }
+
         const store: SessionFile = {
-            sessions,
-            lastSessionId: parsed.lastSessionId
+            sessions: orderedSessions,
+            lastSessionId: parsed.lastSessionId,
+            preferences: parsed.preferences
         }
 
         if (shouldRewrite) {
@@ -243,8 +289,13 @@ async function readStore(): Promise<SessionFile> {
 
 async function writeStore(store: SessionFile): Promise<void> {
     const storagePath = getStoragePath()
+    const normalizedStore: SessionFile = {
+        ...store,
+        sessions: normalizeSessionsByHost(store.sessions)
+    }
+
     await mkdir(dirname(storagePath), {recursive: true})
-    await writeFile(storagePath, JSON.stringify(toPersistedStore(store), null, 2), 'utf-8')
+    await writeFile(storagePath, JSON.stringify(toPersistedStore(normalizedStore), null, 2), 'utf-8')
 }
 
 function normalizeImportedSession(input: unknown): StoredSession | null {
@@ -283,7 +334,7 @@ function normalizeImportedSession(input: unknown): StoredSession | null {
         })
     )
 
-    const now = new Date().toISOString()
+    const now = formatLocalTimestamp()
 
     return storedSessionSchema.parse({
         ...normalizedDraft,
@@ -304,8 +355,16 @@ function parseImportedSessions(payload: unknown): StoredSession[] {
         ? parsedPayload.data
         : parsedPayload.data.sessions
 
-    return rawSessions
-        .map((session) => normalizeImportedSession(session))
+    const orderedRawSessions = rawSessions
+        .map((session, index) => ({
+            index,
+            order: session.order ?? index,
+            session
+        }))
+        .sort((left, right) => left.order - right.order || left.index - right.index)
+
+    return orderedRawSessions
+        .map((item) => normalizeImportedSession(item.session))
         .filter((session): session is StoredSession => session !== null)
 }
 
@@ -319,14 +378,29 @@ function validateSavableDraft(input: SessionDraft): SessionDraft {
 
 export async function listSessions(): Promise<StoredSession[]> {
     const store = await readStore()
-    return [...store.sessions].sort((left, right) =>
-        right.updatedAt.localeCompare(left.updatedAt)
-    )
+    return store.sessions
 }
 
 export async function getLastSessionId(): Promise<string | null> {
     const store = await readStore()
     return store.lastSessionId
+}
+
+export async function getWorkspacePreferences(): Promise<WorkspacePreferences> {
+    const store = await readStore()
+    return store.preferences
+}
+
+export async function saveWorkspacePreferences(
+    input: WorkspacePreferences
+): Promise<WorkspacePreferences> {
+    const store = await readStore()
+    const preferences = workspacePreferencesSchema.parse(input)
+
+    store.preferences = preferences
+    await writeStore(store)
+
+    return preferences
 }
 
 export async function getSessionById(id: string): Promise<StoredSession> {
@@ -353,7 +427,7 @@ export async function saveSession(input: SessionDraft): Promise<StoredSession> {
         : -1
     const existing = existingIndex >= 0 ? store.sessions[existingIndex] : undefined
     const normalized = validateSavableDraft(validateNormalizedDraft(normalizeDraft(input, existing)))
-    const now = new Date().toISOString()
+    const now = formatLocalTimestamp()
 
     const session: StoredSession = existing
         ? storedSessionSchema.parse({
@@ -378,6 +452,23 @@ export async function saveSession(input: SessionDraft): Promise<StoredSession> {
     store.lastSessionId = session.id
     await writeStore(store)
     return session
+}
+
+export async function reorderSessions(sessionIds: string[]): Promise<StoredSession[]> {
+    const store = await readStore()
+    const normalizedIds = normalizeSessionIdsByHost(sessionIds, store.sessions)
+    const sessionMap = new Map(store.sessions.map((session) => [session.id, session]))
+    const nextSessions = normalizedIds
+        .map((sessionId) => sessionMap.get(sessionId))
+        .filter((session): session is StoredSession => session !== undefined)
+
+    if (nextSessions.length !== store.sessions.length) {
+        throw new Error('Connection order could not be saved.')
+    }
+
+    store.sessions = nextSessions
+    await writeStore(store)
+    return store.sessions
 }
 
 export async function deleteSession(id: string): Promise<void> {
@@ -419,9 +510,11 @@ export async function importSessionsFromPath(filePath: string): Promise<SessionI
         throw new Error('No valid connections were found in the selected file.')
     }
 
+    const currentStore = await readStore()
     const store: SessionFile = {
         sessions: importedSessions,
-        lastSessionId: importedSessions[0]?.id ?? null
+        lastSessionId: importedSessions[0]?.id ?? null,
+        preferences: currentStore.preferences
     }
 
     await writeStore(store)

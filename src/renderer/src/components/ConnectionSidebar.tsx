@@ -10,6 +10,7 @@ import {
 import {filterDatabaseSchemasByQuery, tableMeta} from '@renderer/lib/workspace'
 import {
     handleConnectionPress,
+    handleConnectionOrderChange,
     handleDisconnect,
     handleExportConnections,
     handleImportConnections,
@@ -22,8 +23,28 @@ import {
     workspaceStore
 } from '@renderer/store/workspaceStore'
 import type {StoredSession as StoredConnection} from '@shared/contracts'
+import {groupSessionsByHost} from '@shared/sessionOrder'
+import {
+    closestCenter,
+    DndContext,
+    DragOverlay,
+    PointerSensor,
+    type DragEndEvent,
+    type DragStartEvent,
+    useSensor,
+    useSensors
+} from '@dnd-kit/core'
+import {
+    arrayMove,
+    SortableContext,
+    useSortable,
+    verticalListSortingStrategy
+} from '@dnd-kit/sortable'
+import {CSS} from '@dnd-kit/utilities'
 import {useShallow, useStoreValue} from '@simplestack/store/react'
 import {
+    ArrowDown,
+    ArrowUp,
     Cable,
     ChevronDown,
     ChevronRight,
@@ -41,6 +62,11 @@ import {
 import {type MouseEvent, useEffect, useMemo, useRef, useState} from 'react'
 import GitHubMark from './GitHubMark'
 
+const connectionIconClass =
+    'inline-flex h-7 w-7 flex-none items-center justify-center rounded-full border p-0 leading-none transition duration-150'
+const connectionStatusIconClass = 'h-3.5 w-3.5'
+const connectionActionIconClass = 'h-4 w-4'
+
 function ConnectionSidebar() {
     const [busy, connections, expandedSchemas, selectedConnectionId, snapshot] = useStoreValue(
         workspaceStore,
@@ -54,10 +80,6 @@ function ConnectionSidebar() {
     )
     const connectedConnectionId = useStoreValue(workspaceStore, selectConnectedConnectionId)
     const treeSchemas = snapshot?.databaseTree.schemas ?? []
-    const connectionIconClass =
-        'inline-flex h-7 w-7 flex-none items-center justify-center rounded-full border p-0 leading-none transition duration-150'
-    const connectionStatusIconClass = 'h-3.5 w-3.5'
-    const connectionActionIconClass = 'h-4 w-4'
     const actionsMenuRef = useRef<HTMLDivElement | null>(null)
     const schemaRefs = useRef<Record<string, HTMLDivElement | null>>({})
     const connectionContextMenuRef = useRef<HTMLDivElement | null>(null)
@@ -71,6 +93,7 @@ function ConnectionSidebar() {
     const [focusedSchemaName, setFocusedSchemaName] = useState<string | null>(null)
     const [actionsMenuOpen, setActionsMenuOpen] = useState(false)
     const [appVersion, setAppVersion] = useState<string | null>(null)
+    const [activeDragConnectionId, setActiveDragConnectionId] = useState<string | null>(null)
     const [tableSearchQuery, setTableSearchQuery] = useState('')
     const [connectionContextMenu, setConnectionContextMenu] = useState<{
         connection: StoredConnection
@@ -80,6 +103,20 @@ function ConnectionSidebar() {
     const filteredTreeSchemas = useMemo(
         () => filterDatabaseSchemasByQuery(treeSchemas, tableSearchQuery),
         [tableSearchQuery, treeSchemas]
+    )
+    const connectionGroups = useMemo(() => groupSessionsByHost(connections), [connections])
+    const orderedConnectionIds = useMemo(
+        () => connectionGroups.flatMap((group) => group.sessions.map((connection) => connection.id)),
+        [connectionGroups]
+    )
+    const activeDragConnection =
+        connections.find((connection) => connection.id === activeDragConnectionId) ?? null
+    const sensors = useSensors(
+        useSensor(PointerSensor, {
+            activationConstraint: {
+                distance: 8
+            }
+        })
     )
     const searchActive = tableSearchQuery.trim().length > 0
 
@@ -221,6 +258,57 @@ function ConnectionSidebar() {
         handleConnectionPress(connection)
     }
 
+    function handleConnectionDragStart(event: DragStartEvent): void {
+        setActiveDragConnectionId(String(event.active.id))
+    }
+
+    function handleConnectionDragEnd(event: DragEndEvent): void {
+        const {active, over} = event
+
+        setActiveDragConnectionId(null)
+
+        if (!over || active.id === over.id) {
+            return
+        }
+
+        const activeConnectionId = String(active.id)
+        const overConnectionId = String(over.id)
+        const activeIndex = orderedConnectionIds.indexOf(activeConnectionId)
+        const overIndex = orderedConnectionIds.indexOf(overConnectionId)
+
+        if (activeIndex === -1 || overIndex === -1) {
+            return
+        }
+
+        void handleConnectionOrderChange(
+            arrayMove(orderedConnectionIds, activeIndex, overIndex)
+        )
+    }
+
+    function handleConnectionDragCancel(): void {
+        setActiveDragConnectionId(null)
+    }
+
+    function handleConnectionGroupMove(groupKey: string, direction: 'up' | 'down'): void {
+        const groupIndex = connectionGroups.findIndex((group) => group.key === groupKey)
+        const nextIndex = direction === 'up' ? groupIndex - 1 : groupIndex + 1
+
+        if (
+            groupIndex === -1 ||
+            nextIndex < 0 ||
+            nextIndex >= connectionGroups.length ||
+            disableConnectionActions
+        ) {
+            return
+        }
+
+        void handleConnectionOrderChange(
+            arrayMove(connectionGroups, groupIndex, nextIndex).flatMap((group) =>
+                group.sessions.map((connection) => connection.id)
+            )
+        )
+    }
+
     return (
         <aside
             className={`${shellPanelClass} flex min-h-0 flex-col gap-3 p-3.5 max-[720px]:p-3 max-[980px]:overflow-visible`}
@@ -308,95 +396,101 @@ function ConnectionSidebar() {
                         {connections.length === 0 ? (
                             <div className={emptyStateClass}>No saved connections.</div>
                         ) : (
-                            connections.map((connection) => {
-                                const isSelected = connection.id === selectedConnectionId
-                                const isConnected = connection.id === connectedConnectionId
+                            <DndContext
+                                collisionDetection={closestCenter}
+                                onDragCancel={handleConnectionDragCancel}
+                                onDragEnd={handleConnectionDragEnd}
+                                onDragStart={handleConnectionDragStart}
+                                sensors={sensors}
+                            >
+                                <SortableContext
+                                    items={orderedConnectionIds}
+                                    strategy={verticalListSortingStrategy}
+                                >
+                                    <div className="flex flex-col gap-2">
+                                        {connectionGroups.map((group, groupIndex) => (
+                                            <div className="flex flex-col gap-1.5" key={group.key}>
+                                                {connectionGroups.length > 1 || group.sessions.length > 1 ? (
+                                                    <div className="flex items-center justify-between gap-2 px-1 pt-1">
+                                                        <span className="truncate text-[10px] tracking-[0.12em] text-studio-muted">
+                                                            {group.label}
+                                                        </span>
+                                                        <div className="flex flex-none items-center gap-1">
+                                                            <span className="pr-1 text-[10px] tabular-nums text-studio-muted">
+                                                                {group.sessions.length}
+                                                            </span>
 
-                                return (
-                                    <div
-                                        className={cn(
-                                            'group flex w-full items-center gap-3 rounded-2xl border p-3 text-left text-studio-text transition duration-150 hover:-translate-y-0.5',
-                                            isConnected
-                                                ? 'border-studio-amber/35 bg-[linear-gradient(180deg,rgba(255,209,102,0.18),rgba(255,209,102,0.08))] shadow-[inset_0_1px_0_rgba(255,209,102,0.08)]'
-                                                : isSelected
-                                                    ? 'border-studio-border-strong bg-studio-panel-strong'
-                                                    : 'border-studio-border'
-                                        )}
-                                        key={connection.id}
-                                        onContextMenu={(event) => openConnectionContextMenu(event, connection)}
-                                    >
-                                        <button
-                                            className="min-w-0 flex-1 text-left disabled:cursor-not-allowed disabled:opacity-50"
-                                            disabled={disableConnectionActions}
-                                            onClick={() => handleConnectionSelect(connection)}
-                                            type="button"
-                                        >
-                                            <div
-                                                className={cn(
-                                                    'font-semibold',
-                                                    isConnected ? 'text-studio-amber' : 'text-studio-text'
-                                                )}
-                                            >
-                                                {connection.name}
+                                                            {connectionGroups.length > 1 ? (
+                                                                <>
+                                                                    <button
+                                                                        aria-label={`Move ${group.label} group up`}
+                                                                        className="inline-flex h-6 w-6 items-center justify-center rounded-lg border border-studio-border bg-studio-panel-soft text-studio-muted transition duration-150 hover:border-studio-border-strong hover:text-studio-text disabled:cursor-not-allowed disabled:opacity-40"
+                                                                        disabled={disableConnectionActions || groupIndex === 0}
+                                                                        onClick={() => handleConnectionGroupMove(group.key, 'up')}
+                                                                        title="Move group up"
+                                                                        type="button"
+                                                                    >
+                                                                        <ArrowUp size={12} />
+                                                                    </button>
+
+                                                                    <button
+                                                                        aria-label={`Move ${group.label} group down`}
+                                                                        className="inline-flex h-6 w-6 items-center justify-center rounded-lg border border-studio-border bg-studio-panel-soft text-studio-muted transition duration-150 hover:border-studio-border-strong hover:text-studio-text disabled:cursor-not-allowed disabled:opacity-40"
+                                                                        disabled={
+                                                                            disableConnectionActions ||
+                                                                            groupIndex === connectionGroups.length - 1
+                                                                        }
+                                                                        onClick={() => handleConnectionGroupMove(group.key, 'down')}
+                                                                        title="Move group down"
+                                                                        type="button"
+                                                                    >
+                                                                        <ArrowDown size={12} />
+                                                                    </button>
+                                                                </>
+                                                            ) : null}
+                                                        </div>
+                                                    </div>
+                                                ) : null}
+
+                                                <div className="flex flex-col gap-1.5">
+                                                    {group.sessions.map((connection) => (
+                                                        <SortableConnectionCard
+                                                            connection={connection}
+                                                            disableConnectionActions={disableConnectionActions}
+                                                            index={orderedConnectionIds.indexOf(connection.id)}
+                                                            isConnected={connection.id === connectedConnectionId}
+                                                            isSelected={connection.id === selectedConnectionId}
+                                                            key={connection.id}
+                                                            onConnectionContextMenu={openConnectionContextMenu}
+                                                            onConnectionSelect={handleConnectionSelect}
+                                                            onDisconnect={(connectionId) => {
+                                                                setConnectionContextMenu(null)
+                                                                handleDisconnect(connectionId)
+                                                            }}
+                                                        />
+                                                    ))}
+                                                </div>
                                             </div>
-
-                                            <div
-                                                className={cn(
-                                                    'mt-1.5 text-xs',
-                                                    isConnected ? 'text-studio-amber-soft' : 'text-studio-muted'
-                                                )}
-                                            >
-                                                {tableMeta(connection)}
-                                            </div>
-                                        </button>
-
-                                        <div className="flex flex-none items-center gap-2 ">
-                                            {isConnected ? (
-                                                <button
-                                                    aria-label={`Disconnect ${connection.name}`}
-                                                    className={cn(
-                                                        connectionIconClass,
-                                                        'border-red-500/35 bg-red-500/10 text-red-300 hover:border-red-500/55 hover:bg-red-500/18'
-                                                    )}
-                                                    disabled={disableConnectionActions}
-                                                    onClick={(event) => {
-                                                        event.stopPropagation()
-                                                        setConnectionContextMenu(null)
-                                                        handleDisconnect(connection.id)
-                                                    }}
-                                                    type="button"
-                                                >
-                                                    <Unplug className={connectionStatusIconClass} />
-                                                </button>
-                                            ) : null}
-
-                                            {isConnected ? (
-                                                <span
-                                                    className={cn(
-                                                        connectionIconClass,
-                                                        'border-studio-amber/30 bg-studio-amber/10 text-studio-amber opacity-100'
-                                                    )}
-                                                >
-                                                    <Cable className={connectionStatusIconClass} />
-                                                </span>
-                                            ) : (
-                                                <button
-                                                    aria-label={`Connect ${connection.name}`}
-                                                    className={cn(
-                                                        connectionIconClass,
-                                                        'border-studio-border bg-[#111111] text-studio-muted opacity-0 hover:border-studio-border-strong hover:text-studio-text group-hover:opacity-100'
-                                                    )}
-                                                    disabled={disableConnectionActions}
-                                                    onClick={() => handleConnectionSelect(connection)}
-                                                    type="button"
-                                                >
-                                                    <PlugZap className={connectionActionIconClass} />
-                                                </button>
-                                            )}
-                                        </div>
+                                        ))}
                                     </div>
-                                )
-                            })
+                                </SortableContext>
+
+                                <DragOverlay>
+                                    {activeDragConnection ? (
+                                        <ConnectionCard
+                                            connection={activeDragConnection}
+                                            disableConnectionActions
+                                            index={Math.max(0, orderedConnectionIds.indexOf(activeDragConnection.id))}
+                                            isConnected={activeDragConnection.id === connectedConnectionId}
+                                            isDragOverlay
+                                            isSelected={activeDragConnection.id === selectedConnectionId}
+                                            onConnectionContextMenu={() => undefined}
+                                            onConnectionSelect={() => undefined}
+                                            onDisconnect={() => undefined}
+                                        />
+                                    ) : null}
+                                </DragOverlay>
+                            </DndContext>
                         )}
                     </div>
                 </section>
@@ -576,6 +670,153 @@ function ConnectionSidebar() {
                 </div>
             ) : null}
         </aside>
+    )
+}
+
+interface ConnectionCardProps {
+    connection: StoredConnection
+    disableConnectionActions: boolean
+    index: number
+    isConnected: boolean
+    isDragOverlay?: boolean
+    isSelected: boolean
+    onConnectionContextMenu: (
+        event: MouseEvent<HTMLElement>,
+        connection: StoredConnection
+    ) => void
+    onConnectionSelect: (connection: StoredConnection) => void
+    onDisconnect: (connectionId: string) => void
+}
+
+function ConnectionCard({
+    connection,
+    disableConnectionActions,
+    index,
+    isConnected,
+    isDragOverlay = false,
+    isSelected,
+    onConnectionContextMenu,
+    onConnectionSelect,
+    onDisconnect
+}: ConnectionCardProps) {
+    return (
+        <div
+            className={cn(
+                'group flex w-full cursor-grab touch-none items-center gap-3 rounded-2xl border p-3 text-left text-studio-text transition duration-150 hover:-translate-y-0.5 active:cursor-grabbing',
+                isConnected
+                    ? 'border-studio-amber/35 bg-[linear-gradient(180deg,rgba(255,209,102,0.18),rgba(255,209,102,0.08))] shadow-[inset_0_1px_0_rgba(255,209,102,0.08)]'
+                    : isSelected
+                        ? 'border-studio-border-strong bg-studio-panel-strong'
+                        : 'border-studio-border',
+                isDragOverlay &&
+                    'cursor-grabbing border-studio-amber/40 bg-[linear-gradient(180deg,rgba(255,209,102,0.18),rgba(255,209,102,0.08))] shadow-[0_18px_40px_rgba(0,0,0,0.34)] rotate-[1deg]'
+            )}
+            onContextMenu={(event) => onConnectionContextMenu(event, connection)}
+        >
+            <button
+                className="grid min-w-0 flex-1 grid-cols-[38px_minmax(0,1fr)] items-center gap-2.5 text-left disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={disableConnectionActions}
+                onClick={() => onConnectionSelect(connection)}
+                type="button"
+            >
+                <span className="text-[11px] tabular-nums leading-none text-studio-muted">
+                    #{String(index + 1).padStart(2, '0')}
+                </span>
+
+                <div className="min-w-0">
+                    <div
+                        className={cn(
+                            'truncate font-semibold',
+                            isConnected ? 'text-studio-amber' : 'text-studio-text'
+                        )}
+                    >
+                        {connection.name}
+                    </div>
+
+                    <div
+                        className={cn(
+                            'mt-1.5 truncate text-xs',
+                            isConnected ? 'text-studio-amber-soft' : 'text-studio-muted'
+                        )}
+                    >
+                        {tableMeta(connection)}
+                    </div>
+                </div>
+            </button>
+
+            <div className="flex flex-none items-center gap-2">
+                {isConnected ? (
+                    <button
+                        aria-label={`Disconnect ${connection.name}`}
+                        className={cn(
+                            connectionIconClass,
+                            'border-red-500/35 bg-red-500/10 text-red-300 hover:border-red-500/55 hover:bg-red-500/18'
+                        )}
+                        disabled={disableConnectionActions}
+                        onClick={(event) => {
+                            event.stopPropagation()
+                            onDisconnect(connection.id)
+                        }}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        type="button"
+                    >
+                        <Unplug className={connectionStatusIconClass} />
+                    </button>
+                ) : null}
+
+                {isConnected ? (
+                    <span
+                        className={cn(
+                            connectionIconClass,
+                            'border-studio-amber/30 bg-studio-amber/10 text-studio-amber opacity-100'
+                        )}
+                    >
+                        <Cable className={connectionStatusIconClass} />
+                    </span>
+                ) : (
+                    <button
+                        aria-label={`Connect ${connection.name}`}
+                        className={cn(
+                            connectionIconClass,
+                            'border-studio-border bg-[#111111] text-studio-muted opacity-0 hover:border-studio-border-strong hover:text-studio-text group-hover:opacity-100'
+                        )}
+                        disabled={disableConnectionActions}
+                        onClick={(event) => {
+                            event.stopPropagation()
+                            onConnectionSelect(connection)
+                        }}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        type="button"
+                    >
+                        <PlugZap className={connectionActionIconClass} />
+                    </button>
+                )}
+            </div>
+        </div>
+    )
+}
+
+interface SortableConnectionCardProps extends ConnectionCardProps {}
+
+function SortableConnectionCard(props: SortableConnectionCardProps) {
+    const {attributes, isDragging, listeners, setNodeRef, transform, transition} = useSortable({
+        disabled: props.disableConnectionActions,
+        id: props.connection.id
+    })
+
+    return (
+        <div
+            className={cn(isDragging && 'opacity-30')}
+            ref={setNodeRef}
+            style={{
+                transform: CSS.Transform.toString(transform),
+                transition
+            }}
+            {...attributes}
+            {...listeners}
+        >
+            <ConnectionCard {...props} />
+        </div>
     )
 }
 

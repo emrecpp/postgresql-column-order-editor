@@ -92,6 +92,11 @@ export interface PreviewColumnOrderResult {
 export interface SessionFile {
     sessions: StoredSession[]
     lastSessionId: string | null
+    preferences: WorkspacePreferences
+}
+
+export interface WorkspacePreferences {
+    deleteBackupTableAfterReorder: boolean
 }
 
 export interface SessionExportResult {
@@ -118,7 +123,10 @@ export interface DesktopApi {
     listSessions: () => Promise<StoredSession[]>
     saveSession: (input: SessionDraft) => Promise<StoredSession>
     deleteSession: (id: string) => Promise<void>
+    reorderSessions: (sessionIds: string[]) => Promise<StoredSession[]>
     getLastSessionId: () => Promise<string | null>
+    getWorkspacePreferences: () => Promise<WorkspacePreferences>
+    saveWorkspacePreferences: (input: WorkspacePreferences) => Promise<WorkspacePreferences>
     exportSessions: () => Promise<SessionExportResult>
     importSessions: () => Promise<SessionImportResult>
     openExternal: (url: string) => Promise<void>
@@ -140,4 +148,8 @@ export const DEFAULT_SESSION_DRAFT: SessionDraft = {
     schema: '',
     table: '',
     ssl: false
+}
+
+export const DEFAULT_WORKSPACE_PREFERENCES: WorkspacePreferences = {
+    deleteBackupTableAfterReorder: false
 }

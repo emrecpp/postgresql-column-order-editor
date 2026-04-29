@@ -3,7 +3,8 @@ import type {
     DesktopApi,
     PreviewColumnOrderRequest,
     ReorderRequest,
-    SessionDraft
+    SessionDraft,
+    WorkspacePreferences
 } from '@shared/contracts'
 import {contextBridge, ipcRenderer} from 'electron'
 
@@ -12,7 +13,11 @@ const api: DesktopApi = {
     listSessions: () => ipcRenderer.invoke('sessions:list'),
     saveSession: (input: SessionDraft) => ipcRenderer.invoke('sessions:save', input),
     deleteSession: (id: string) => ipcRenderer.invoke('sessions:delete', id),
+    reorderSessions: (sessionIds: string[]) => ipcRenderer.invoke('sessions:reorder', sessionIds),
     getLastSessionId: () => ipcRenderer.invoke('sessions:last'),
+    getWorkspacePreferences: () => ipcRenderer.invoke('workspace:preferences:get'),
+    saveWorkspacePreferences: (input: WorkspacePreferences) =>
+        ipcRenderer.invoke('workspace:preferences:save', input),
     exportSessions: () => ipcRenderer.invoke('sessions:export'),
     importSessions: () => ipcRenderer.invoke('sessions:import'),
     openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),

@@ -113,10 +113,23 @@ export const previewColumnOrderRequestSchema = z.object({
   action: z.enum(['move_up', 'move_down', 'reset'])
 })
 
+export const workspacePreferencesSchema = z
+  .object({
+    deleteBackupTableAfterReorder: z.boolean().default(false)
+  })
+  .default({
+    deleteBackupTableAfterReorder: false
+  })
+
 export const sessionFileSchema = z.object({
   sessions: z.array(storedSessionSchema),
-  lastSessionId: z.string().nullable()
+  lastSessionId: z.string().nullable(),
+  preferences: workspacePreferencesSchema
 })
+
+export const sessionOrderSchema = z
+  .array(requiredText('Session id'))
+  .min(1, 'At least one connection is required.')
 
 export const importedSessionInputSchema = z
   .object({
@@ -124,9 +137,9 @@ export const importedSessionInputSchema = z
     database: z.string().optional(),
     host: z.string().optional(),
     name: z.string().optional(),
+    order: z.number().int().nonnegative().optional(),
     password: z.string().optional(),
     port: z.number().optional(),
-    schema: z.string().optional(),
     ssl: z.boolean().optional(),
     updatedAt: z.string().optional(),
     username: z.string().optional()
