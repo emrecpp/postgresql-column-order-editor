@@ -320,28 +320,6 @@ function hasTarget(tree: DatabaseTree, target: TableTarget): boolean {
     )
 }
 
-function findFallbackTarget(tree: DatabaseTree, preferredSchema?: string): TableTarget | null {
-    const orderedSchemas = preferredSchema
-        ? [
-            ...tree.schemas.filter((schemaNode) => schemaNode.name === preferredSchema),
-            ...tree.schemas.filter((schemaNode) => schemaNode.name !== preferredSchema)
-        ]
-        : tree.schemas
-
-    for (const schemaNode of orderedSchemas) {
-        const firstTable = schemaNode.tables[0]
-
-        if (firstTable) {
-            return {
-                schema: schemaNode.name,
-                table: firstTable
-            }
-        }
-    }
-
-    return null
-}
-
 function ensureRegularTable(meta: TableMeta): void {
     if (meta.relkind !== 'r') {
         throw new Error(
@@ -1136,18 +1114,10 @@ export async function fetchTableSnapshot(
 ): Promise<TableSnapshot> {
     return withClient(session, async (client) => {
         const databaseTree = await getDatabaseTree(client)
-        const requestedTarget =
-            target ??
-            (session.schema && session.table
-                ? {
-                    schema: session.schema,
-                    table: session.table
-                }
-                : null)
         const resolvedTarget =
-            requestedTarget && hasTarget(databaseTree, requestedTarget)
-                ? requestedTarget
-                : findFallbackTarget(databaseTree, session.schema || undefined)
+            target && hasTarget(databaseTree, target)
+                ? target
+                : null
 
         if (!resolvedTarget) {
             return {

@@ -16,11 +16,12 @@ import {
 } from '@renderer/store/workspaceStore'
 
 function ColumnDetailsPanel() {
-    const [column, columnIndex, totalColumns] = useStoreValue(
+    const [column, columnIndex, hasSelectedTable, totalColumns] = useStoreValue(
         workspaceStore,
         useShallow((state) => [
             selectResolvedSelectedColumn(state),
             selectResolvedSelectedColumnIndex(state),
+            Boolean(state.snapshot?.target),
             state.columns.length
         ] as const)
     )
@@ -38,7 +39,9 @@ function ColumnDetailsPanel() {
 
                 <div className="min-h-0 flex-1 overflow-auto p-3.5 max-[980px]:max-h-[320px]">
                     <div className="grid min-h-full place-items-center text-center text-studio-muted">
-                        Select a column from the left to inspect it.
+                        {hasSelectedTable
+                            ? 'Select a column from the left to inspect it.'
+                            : 'Select a table from the left sidebar to inspect its columns.'}
                     </div>
                 </div>
             </section>

@@ -61,6 +61,11 @@ function ConnectionSidebar() {
     const connectionContextMenuRef = useRef<HTMLDivElement | null>(null)
     const disableConnectionActions =
         busy === 'connecting' || busy === 'applying' || busy === 'saving'
+    const disableTargetTreeActions =
+        busy === 'connecting' ||
+        busy === 'switchingTarget' ||
+        busy === 'applying' ||
+        busy === 'saving'
     const [focusedSchemaName, setFocusedSchemaName] = useState<string | null>(null)
     const [actionsMenuOpen, setActionsMenuOpen] = useState(false)
     const [appVersion, setAppVersion] = useState<string | null>(null)
@@ -421,11 +426,12 @@ function ConnectionSidebar() {
                                     >
                                         <button
                                             className={cn(
-                                                'flex min-h-10 w-full items-center gap-2.5 rounded-2xl border px-3 py-2.5 text-left font-semibold transition duration-150 hover:-translate-y-0.5',
+                                                'flex min-h-10 w-full items-center gap-2.5 rounded-2xl border px-3 py-2.5 text-left font-semibold transition duration-150 hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0',
                                                 isFocused
                                                     ? 'border-studio-amber/30 bg-studio-gold'
                                                     : 'border-studio-amber/15 bg-[linear-gradient(180deg,rgba(255,209,102,0.06),rgba(255,209,102,0.02))]'
                                             )}
+                                            disabled={disableTargetTreeActions}
                                             onClick={() => {
                                                 setFocusedSchemaName(schemaNode.name)
                                                 toggleSchema(schemaNode.name)
@@ -454,11 +460,12 @@ function ConnectionSidebar() {
                                                     return (
                                                         <button
                                                             className={cn(
-                                                                'flex min-h-10 w-full items-center gap-2.5 rounded-2xl border px-3 py-2.5 text-left text-studio-muted-strong transition duration-150 hover:-translate-y-0.5',
+                                                                'flex min-h-10 w-full items-center gap-2.5 rounded-2xl border px-3 py-2.5 text-left text-studio-muted-strong transition duration-150 hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0',
                                                                 isActive
                                                                     ? 'border-studio-border-strong bg-studio-panel-strong text-studio-text'
                                                                     : 'border-studio-border bg-studio-panel-soft'
                                                             )}
+                                                            disabled={disableTargetTreeActions}
                                                             key={`${schemaNode.name}.${table}`}
                                                             onClick={() => handleTableSelect(schemaNode.name, table)}
                                                             type="button"

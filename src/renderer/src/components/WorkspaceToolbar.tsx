@@ -21,7 +21,12 @@ function WorkspaceToolbar({
         availableSchemas[0]
     const availableTables = selectedSchemaNode?.tables ?? []
     const disableTargetSelection =
-        !snapshot || !hasResolvedTarget || busy === 'connecting' || busy === 'applying' || busy === 'saving'
+        !snapshot ||
+        !hasResolvedTarget ||
+        busy === 'connecting' ||
+        busy === 'switchingTarget' ||
+        busy === 'applying' ||
+        busy === 'saving'
 
     const schemaOptions = availableSchemas.map((schemaNode) => ({
         meta: `${schemaNode.tables.length} tables`,

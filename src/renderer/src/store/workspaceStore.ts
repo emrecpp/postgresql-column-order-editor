@@ -14,7 +14,13 @@ import {
 import {store} from '@simplestack/store'
 import type {SetStateAction} from 'react'
 
-export type BusyState = 'idle' | 'loading' | 'saving' | 'connecting' | 'applying'
+export type BusyState =
+    | 'idle'
+    | 'loading'
+    | 'saving'
+    | 'connecting'
+    | 'switchingTarget'
+    | 'applying'
 export type NoticeType = 'success' | 'error' | 'info'
 export type DialogMode = 'create' | 'edit'
 
@@ -33,6 +39,8 @@ export interface WorkspaceState {
     databaseAutoOpenSignal: number
     deleteBackupTableAfterReorder: boolean
     deleteDialogOpen: boolean
+    deleteTargetConnectionId: string | null
+    deleteTargetConnectionName: string | null
     dialogMode: DialogMode
     dialogOpen: boolean
     draft: ConnectionDraft
@@ -56,6 +64,8 @@ const initialWorkspaceState: WorkspaceState = {
     databaseAutoOpenSignal: 0,
     deleteBackupTableAfterReorder: false,
     deleteDialogOpen: false,
+    deleteTargetConnectionId: null,
+    deleteTargetConnectionName: null,
     dialogMode: 'create',
     dialogOpen: false,
     draft: cloneDraft(DEFAULT_CONNECTION_DRAFT),
@@ -71,6 +81,7 @@ const initialWorkspaceState: WorkspaceState = {
 
 const runtime = {
     bootstrapPromise: null as Promise<void> | null,
+    connectRequestSequence: 0,
     hasBootstrapped: false,
     connectionDatabasesSignature: null as string | null,
     databaseAutoFetchSignature: null as string | null,
@@ -80,7 +91,10 @@ const runtime = {
 export const workspaceStore = store<WorkspaceState>(initialWorkspaceState)
 
 function getDefaultExpandedSchemas(snapshot: TableSnapshot): string[] {
-    return snapshot.databaseTree.schemas.length === 1 ? [snapshot.databaseTree.schemas[0].name] : []
+    const defaultSchemaName =
+        snapshot.target?.schema ?? snapshot.databaseTree.schemas[0]?.name ?? null
+
+    return defaultSchemaName ? [defaultSchemaName] : []
 }
 
 function getConnectionDraftSignature(draft: ConnectionDraft): string {
@@ -167,6 +181,7 @@ export function selectCanApply(state: WorkspaceState): boolean {
         selectHasOrderChanges(state) &&
         state.busy !== 'applying' &&
         state.busy !== 'connecting' &&
+        state.busy !== 'switchingTarget' &&
         state.busy !== 'saving'
     )
 }
@@ -195,15 +210,32 @@ export function selectConnectedConnectionId(state: WorkspaceState): string | nul
     return state.snapshot?.session.id ?? null
 }
 
-function syncSelectedConnectionState(nextState: WorkspaceState): WorkspaceState {
+function syncSelectedConnectionState(
+    previousState: WorkspaceState,
+    nextState: WorkspaceState
+): WorkspaceState {
     const selectedConnection = selectSelectedConnection(nextState)
     const trimmedDatabase = selectedConnection?.database.trim()
+    const shouldPreserveLoadedDatabases =
+        previousState.selectedConnectionId === nextState.selectedConnectionId
+    const preservedDatabases = shouldPreserveLoadedDatabases
+        ? previousState.availableConnectionDatabases
+        : []
 
-    runtime.connectionDatabasesSignature = null
+    if (!shouldPreserveLoadedDatabases) {
+        runtime.connectionDatabasesSignature = null
+    }
+
+    const nextAvailableConnectionDatabases =
+        preservedDatabases.length > 0
+            ? Array.from(new Set([...(trimmedDatabase ? [trimmedDatabase] : []), ...preservedDatabases]))
+            : trimmedDatabase
+                ? [trimmedDatabase]
+                : []
 
     return {
         ...nextState,
-        availableConnectionDatabases: trimmedDatabase ? [trimmedDatabase] : [],
+        availableConnectionDatabases: nextAvailableConnectionDatabases,
         loadingConnectionDatabases: false
     }
 }
@@ -264,7 +296,7 @@ async function bootstrapWorkspace(): Promise<void> {
             savedConnections.find((item) => item.id === lastConnectionId) ?? savedConnections[0] ?? null
 
         workspaceStore.set((state) =>
-            syncSelectedConnectionState({
+            syncSelectedConnectionState(state, {
                 ...state,
                 busy: 'idle',
                 connections: savedConnections,
@@ -339,15 +371,19 @@ export function openCreateDialog(): void {
 export function openDeleteDialog(connectionId?: string): void {
     const currentState = workspaceStore.get()
     const nextConnectionId = connectionId ?? currentState.selectedConnectionId
+    const targetConnection =
+        currentState.connections.find((item) => item.id === nextConnectionId) ?? null
 
-    if (!nextConnectionId) {
+    if (!nextConnectionId || !targetConnection) {
         return
     }
 
     workspaceStore.set((state) =>
-        syncSelectedConnectionState({
+        syncSelectedConnectionState(state, {
             ...state,
             deleteDialogOpen: true,
+            deleteTargetConnectionId: targetConnection.id,
+            deleteTargetConnectionName: targetConnection.name,
             selectedConnectionId: nextConnectionId
         })
     )
@@ -372,7 +408,7 @@ export function openEditDialog(connectionOverride?: StoredConnection): void {
 
 export function selectConnection(connectionId: string): void {
     workspaceStore.set((state) =>
-        syncSelectedConnectionState({
+        syncSelectedConnectionState(state, {
             ...state,
             selectedConnectionId: connectionId
         })
@@ -389,7 +425,7 @@ export async function refreshConnections(preferredConnectionId?: string): Promis
         null
 
     workspaceStore.set((state) =>
-        syncSelectedConnectionState({
+        syncSelectedConnectionState(state, {
             ...state,
             connections: savedConnections,
             selectedConnectionId: nextSelection?.id ?? null
@@ -491,8 +527,11 @@ export async function handleImportConnections(): Promise<void> {
     }
 }
 
-export async function handleTestConnection(): Promise<void> {
+export async function handleTestConnection(options?: {
+    autoOpenDatabaseSelect?: boolean
+}): Promise<void> {
     const state = workspaceStore.get()
+    const shouldAutoOpenDatabaseSelect = options?.autoOpenDatabaseSelect === true
 
     if (!selectCanTestConnection(state)) {
         return
@@ -504,6 +543,7 @@ export async function handleTestConnection(): Promise<void> {
         const result = await window.api.testConnection(state.draft)
         const trimmedDatabase = state.draft.database.trim()
         const nextDatabase = result.databases.includes(trimmedDatabase) ? trimmedDatabase : ''
+        const hostLabel = state.draft.host.trim() || result.connectedDatabase
 
         workspaceStore.set((currentState) => ({
             ...currentState,
@@ -511,12 +551,12 @@ export async function handleTestConnection(): Promise<void> {
             connectionFeedback: {
                 text:
                     result.databases.length > 0
-                        ? `Connection successful. ${result.databases.length} database${result.databases.length === 1 ? '' : 's'} loaded from "${result.connectedDatabase}". Choose a database to continue.`
-                        : `Connection successful, but no databases were returned from "${result.connectedDatabase}".`,
+                        ? `Connection successful. ${result.databases.length} database${result.databases.length === 1 ? '' : 's'} loaded from host "${hostLabel}". Choose a database to continue.`
+                        : `Connection successful, but no databases were returned from host "${hostLabel}".`,
                 type: 'success'
             },
             databaseAutoOpenSignal:
-                result.databases.length > 0
+                shouldAutoOpenDatabaseSelect && result.databases.length > 0
                     ? currentState.databaseAutoOpenSignal + 1
                     : currentState.databaseAutoOpenSignal,
             draft:
@@ -563,7 +603,9 @@ export function handleDatabaseFieldFocus(): void {
     }
 
     runtime.databaseAutoFetchSignature = connectionDraftSignature
-    handleTestConnection()
+    void handleTestConnection({
+        autoOpenDatabaseSelect: true
+    })
 }
 
 export async function loadConnectionDatabases(force = false): Promise<void> {
@@ -645,9 +687,15 @@ export async function handleConnectionDatabaseSelect(nextDatabase: string): Prom
 
 export async function handleConnect(
     connectionId: string,
-    target?: ConnectRequest['target']
+    target?: ConnectRequest['target'],
+    options?: {
+        busyState?: Extract<BusyState, 'connecting' | 'switchingTarget'>
+    }
 ): Promise<void> {
-    setWorkspacePatch({busy: 'connecting'})
+    const requestSequence = ++runtime.connectRequestSequence
+    const busyState = options?.busyState ?? 'connecting'
+
+    setWorkspacePatch({busy: busyState})
 
     try {
         const nextSnapshot = await window.api.connect({
@@ -655,8 +703,12 @@ export async function handleConnect(
             target
         })
 
+        if (requestSequence !== runtime.connectRequestSequence) {
+            return
+        }
+
         workspaceStore.set((state) =>
-            syncSelectedConnectionState({
+            syncSelectedConnectionState(state, {
                 ...state,
                 columns: nextSnapshot.columns,
                 expandedSchemas: (() => {
@@ -680,20 +732,37 @@ export async function handleConnect(
             })
         )
 
+        const hasAvailableTables = nextSnapshot.databaseTree.schemas.length > 0
+        const noticeText = nextSnapshot.qualifiedName
+            ? nextSnapshot.qualifiedName
+            : target
+                ? hasAvailableTables
+                    ? `Connected to "${nextSnapshot.session.database}". The requested table is no longer available. Choose another table from the tree.`
+                    : `Connected to "${nextSnapshot.session.database}". No tables are available in this database.`
+                : hasAvailableTables
+                    ? `Connected to "${nextSnapshot.session.database}". Choose a table from the tree.`
+                    : `Connected to "${nextSnapshot.session.database}". No tables are available in this database.`
+
         showNotice(
             'success',
-            nextSnapshot.qualifiedName
-                ? nextSnapshot.qualifiedName
-                : `Connected to "${nextSnapshot.session.database}". No tables are available in this database.`
+            noticeText
         )
+
+        void loadConnectionDatabases()
     } catch (error) {
+        if (requestSequence !== runtime.connectRequestSequence) {
+            return
+        }
+
         workspaceStore.set((state) => ({
             ...state,
             ...getResetConnectionStatePatch()
         }))
         showNotice('error', getErrorMessage(error))
     } finally {
-        setWorkspacePatch({busy: 'idle'})
+        if (requestSequence === runtime.connectRequestSequence) {
+            setWorkspacePatch({busy: 'idle'})
+        }
     }
 }
 
@@ -716,13 +785,19 @@ export async function handleRefresh(): Promise<void> {
         state.selectedConnectionId,
         state.snapshot?.session.id === state.selectedConnectionId
             ? state.snapshot.target ?? undefined
-            : undefined
+            : undefined,
+        {
+            busyState:
+                state.snapshot?.session.id === state.selectedConnectionId
+                    ? 'switchingTarget'
+                    : 'connecting'
+        }
     )
 }
 
 export async function handleConnectionPress(connection: StoredConnection): Promise<void> {
     workspaceStore.set((state) =>
-        syncSelectedConnectionState({
+        syncSelectedConnectionState(state, {
             ...state,
             selectedConnectionId: connection.id
         })
@@ -785,25 +860,28 @@ export async function handleTableSelect(schema: string, table: string): Promise<
         return
     }
 
-    await handleConnect(state.selectedConnectionId, {schema, table})
+    await handleConnect(state.selectedConnectionId, {schema, table}, {
+        busyState: 'switchingTarget'
+    })
 }
 
 export async function confirmDelete(): Promise<void> {
     const state = workspaceStore.get()
+    const targetConnectionId = state.deleteTargetConnectionId ?? state.selectedConnectionId
 
-    if (!state.selectedConnectionId) {
+    if (!targetConnectionId) {
         return
     }
 
     setWorkspacePatch({busy: 'saving'})
 
     try {
-        await window.api.deleteSession(state.selectedConnectionId)
+        await window.api.deleteSession(targetConnectionId)
 
         workspaceStore.set((currentState) => ({
             ...currentState,
             ...(
-                currentState.snapshot?.session.id === state.selectedConnectionId
+                currentState.snapshot?.session.id === targetConnectionId
                     ? getResetConnectionStatePatch()
                     : {}
             ),

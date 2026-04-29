@@ -2,7 +2,6 @@ import { useStoreValue } from '@simplestack/store/react'
 import ConfirmDialog from './ConfirmDialog'
 import {
   confirmDelete,
-  selectSelectedConnection,
   setDeleteDialogOpen,
   workspaceStore
 } from '@renderer/store/workspaceStore'
@@ -10,17 +9,20 @@ import {
 function DeleteConnectionDialog() {
   const busy = useStoreValue(workspaceStore, (state) => state.busy === 'saving')
   const open = useStoreValue(workspaceStore, (state) => state.deleteDialogOpen)
-  const selectedConnection = useStoreValue(workspaceStore, selectSelectedConnection)
+  const deleteTargetConnectionName = useStoreValue(
+    workspaceStore,
+    (state) => state.deleteTargetConnectionName
+  )
 
   return (
     <ConfirmDialog
       busy={busy}
       description={
-        selectedConnection ? (
+        deleteTargetConnectionName ? (
           <>
             Delete the saved connection{' '}
             <strong className="font-semibold text-studio-text">
-              "{selectedConnection.name}"
+              "{deleteTargetConnectionName}"
             </strong>
             ?
           </>

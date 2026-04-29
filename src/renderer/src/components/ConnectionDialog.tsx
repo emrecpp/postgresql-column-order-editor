@@ -109,154 +109,158 @@ function ConnectionDialog() {
         </DialogHeader>
 
         <div className="flex flex-col gap-3">
-          <label className={fieldClass}>
-            <span className={labelClass}>Name</span>
-            <input
-              className={inputClass}
-              onChange={(event) => updateDraft('name', event.target.value)}
-              type="text"
-              value={draft.name}
+          <div className="flex flex-col gap-3">
+            <label className={fieldClass}>
+              <span className={labelClass}>Name</span>
+              <input
+                className={inputClass}
+                onChange={(event) => updateDraft('name', event.target.value)}
+                type="text"
+                value={draft.name}
+              />
+            </label>
+
+            <div className="flex items-stretch gap-2 max-[720px]:flex-col">
+              <label className={cn(fieldClass, 'flex-1')}>
+                <span className={labelClass}>Host</span>
+                <input
+                  className={inputClass}
+                  onChange={(event) => updateDraft('host', event.target.value)}
+                  placeholder="localhost"
+                  type="text"
+                  value={draft.host}
+                />
+              </label>
+
+              <label className={cn(fieldClass, 'flex-1')}>
+                <span className={labelClass}>Port</span>
+                <input
+                  className={inputClass}
+                  inputMode="numeric"
+                  onChange={(event) => {
+                    const digitsOnly = event.target.value.replace(/\D+/g, '')
+                    const normalizedValue = digitsOnly.replace(/^0+(?=\d)/, '')
+
+                    setPortInput(normalizedValue)
+
+                    if (!normalizedValue) {
+                      updateDraft('port', Number.NaN)
+                      return
+                    }
+
+                    updateDraft('port', Number.parseInt(normalizedValue, 10))
+                  }}
+                  placeholder={String(DEFAULT_CONNECTION_DRAFT.port)}
+                  type="text"
+                  value={portInput}
+                />
+              </label>
+            </div>
+
+            <div className="flex items-stretch gap-2 max-[720px]:flex-col">
+              <label className={cn(fieldClass, 'flex-1')}>
+                <span className={labelClass}>User</span>
+                <input
+                  className={inputClass}
+                  onChange={(event) => updateDraft('username', event.target.value)}
+                  type="text"
+                  value={draft.username}
+                />
+              </label>
+
+              <label className={cn(fieldClass, 'flex-1')}>
+                <span className={labelClass}>Password</span>
+                <input
+                  className={inputClass}
+                  onChange={(event) => updateDraft('password', event.target.value)}
+                  type="password"
+                  value={draft.password}
+                />
+              </label>
+            </div>
+
+            <TargetDropdown
+              autoOpenSignal={databaseAutoOpenSignal}
+              disabled={disableDialogActions}
+              emptyMessage={databaseEmptyMessage}
+              hint={testingConnection ? 'Loading databases...' : `${databaseOptions.length} databases available`}
+              icon={Database}
+              label="Database"
+              onOpenChange={(nextOpen) => {
+                if (nextOpen) {
+                  handleDatabaseFieldFocus()
+                }
+              }}
+              onSelect={(value) => updateDraft('database', value)}
+              onTriggerFocus={handleDatabaseFieldFocus}
+              options={databaseOptions}
+              placeholder="Load and select a database"
+              searchPlaceholder="Search database"
+              selectedValue={draft.database}
+              size="field"
+              wideMenu
             />
-          </label>
 
-          <div className="flex items-stretch gap-2 max-[720px]:flex-col">
-            <label className={cn(fieldClass, 'flex-1')}>
-              <span className={labelClass}>Host</span>
-              <input
-                className={inputClass}
-                onChange={(event) => updateDraft('host', event.target.value)}
-                placeholder="localhost"
-                type="text"
-                value={draft.host}
-              />
-            </label>
+            <div className="text-[11px] text-studio-muted">
+              Select a database before saving this connection.
+            </div>
 
-            <label className={cn(fieldClass, 'flex-1')}>
-              <span className={labelClass}>Port</span>
-              <input
-                className={inputClass}
-                inputMode="numeric"
-                onChange={(event) => {
-                  const digitsOnly = event.target.value.replace(/\D+/g, '')
-                  const normalizedValue = digitsOnly.replace(/^0+(?=\d)/, '')
+            <CheckboxField
+              checked={draft.ssl}
+              onCheckedChange={(checked) => updateDraft('ssl', checked === true)}
+            >
+              SSL
+            </CheckboxField>
+          </div>
 
-                  setPortInput(normalizedValue)
-
-                  if (!normalizedValue) {
-                    updateDraft('port', Number.NaN)
-                    return
-                  }
-
-                  updateDraft('port', Number.parseInt(normalizedValue, 10))
+          <DialogFooter>
+            <div className="w-full">
+              <button
+                className={buttonGhostClass}
+                disabled={!canTestConnection || disableDialogActions}
+                onClick={() => {
+                  void handleTestConnection()
                 }}
-                placeholder={String(DEFAULT_CONNECTION_DRAFT.port)}
-                type="text"
-                value={portInput}
-              />
-            </label>
-          </div>
+                type="button"
+              >
+                <PlugZap size={14} />
+                <span>{testingConnection ? 'Testing...' : 'Test connection'}</span>
+              </button>
+            </div>
 
-          <div className="flex items-stretch gap-2 max-[720px]:flex-col">
-            <label className={cn(fieldClass, 'flex-1')}>
-              <span className={labelClass}>User</span>
-              <input
-                className={inputClass}
-                onChange={(event) => updateDraft('username', event.target.value)}
-                type="text"
-                value={draft.username}
-              />
-            </label>
+            {dialogMode === 'create' ? (
+              <button
+                className={buttonGhostClass}
+                disabled={disableDialogActions}
+                onClick={resetToDefaults}
+                type="button"
+              >
+                <RotateCcw size={14} />
+                <span>Reset</span>
+              </button>
+            ) : (
+              <button
+                className={buttonGhostClass}
+                disabled={disableDialogActions}
+                onClick={() => setDialogOpen(false)}
+                type="button"
+              >
+                <X size={14} />
+                <span>Close</span>
+              </button>
+            )}
 
-            <label className={cn(fieldClass, 'flex-1')}>
-              <span className={labelClass}>Password</span>
-              <input
-                className={inputClass}
-                onChange={(event) => updateDraft('password', event.target.value)}
-                type="password"
-                value={draft.password}
-              />
-            </label>
-          </div>
-
-          <TargetDropdown
-            autoOpenSignal={databaseAutoOpenSignal}
-            disabled={disableDialogActions}
-            emptyMessage={databaseEmptyMessage}
-            hint={testingConnection ? 'Loading databases...' : `${databaseOptions.length} databases available`}
-            icon={Database}
-            label="Database"
-            onOpenChange={(nextOpen) => {
-              if (nextOpen) {
-                handleDatabaseFieldFocus()
-              }
-            }}
-            onSelect={(value) => updateDraft('database', value)}
-            onTriggerFocus={handleDatabaseFieldFocus}
-            options={databaseOptions}
-            placeholder="Load and select a database"
-            searchPlaceholder="Search database"
-            selectedValue={draft.database}
-            size="field"
-            wideMenu
-          />
-
-          <div className="text-[11px] text-studio-muted">
-            Select a database before saving this connection.
-          </div>
-
-          <CheckboxField
-            checked={draft.ssl}
-            onCheckedChange={(checked) => updateDraft('ssl', checked === true)}
-          >
-            SSL
-          </CheckboxField>
+            <button
+              className={buttonPrimaryClass}
+              disabled={disableDialogActions || !canSaveConnection}
+              onClick={handleSaveConnection}
+              type="button"
+            >
+              <Save size={14} />
+              <span>Save</span>
+            </button>
+          </DialogFooter>
         </div>
-
-        <DialogFooter>
-          <div className="w-full">
-            <button
-              className={buttonGhostClass}
-              disabled={!canTestConnection || disableDialogActions}
-              onClick={handleTestConnection}
-              type="button"
-            >
-              <PlugZap size={14} />
-              <span>{testingConnection ? 'Testing...' : 'Test connection'}</span>
-            </button>
-          </div>
-
-          {dialogMode === 'create' ? (
-            <button
-              className={buttonGhostClass}
-              disabled={disableDialogActions}
-              onClick={resetToDefaults}
-              type="button"
-            >
-              <RotateCcw size={14} />
-              <span>Reset</span>
-            </button>
-          ) : (
-            <button
-              className={buttonGhostClass}
-              disabled={disableDialogActions}
-              onClick={() => setDialogOpen(false)}
-              type="button"
-            >
-              <X size={14} />
-              <span>Close</span>
-            </button>
-          )}
-
-          <button
-            className={buttonPrimaryClass}
-            disabled={disableDialogActions || !canSaveConnection}
-            onClick={handleSaveConnection}
-            type="button"
-          >
-            <Save size={14} />
-            <span>Save</span>
-          </button>
-        </DialogFooter>
 
         {connectionFeedback ? (
           <div aria-live="polite" className={connectionFeedbackClass}>
