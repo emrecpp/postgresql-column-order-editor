@@ -1,6 +1,6 @@
 {
     "name": "postgresql-column-order-editor",
-    "version": "0.0.0",
+    "version": "0.0.1",
     "description": "Electron desktop tool for safely reordering PostgreSQL table columns",
     "main": "./out/main/index.js",
     "author": "@emrecpp",
