@@ -5,6 +5,7 @@ import electronUpdater from 'electron-updater'
 import { APP_DISPLAY_NAME } from '@shared/app'
 import {
   closeUpdateProgressWindow,
+  setUpdateProgressWindowCloseHandler,
   showUpdateProgressWindow
 } from './update-progress-window'
 
@@ -31,6 +32,7 @@ let isStartupUpdateFlow = false
 let latestKnownUpdateVersion: string | null = null
 let latestKnownUpdateSize: number | null = null
 let latestKnownUpdateFileName: string | null = null
+let hasRequestedQuitFromUpdateWindowClose = false
 const trackedWindows = new WeakSet<BrowserWindow>()
 
 function getDialogWindow(): BrowserWindow | undefined {
@@ -210,6 +212,19 @@ function logUpdater(level: UpdaterLogLevel, message: string, error?: unknown): v
   }
 }
 
+function quitFromUpdateWindowClose(): void {
+  if (hasRequestedQuitFromUpdateWindowClose) {
+    return
+  }
+
+  hasRequestedQuitFromUpdateWindowClose = true
+  logUpdater('info', '[updater] Update window was closed by the user. Quitting the app.')
+
+  setImmediate(() => {
+    app.exit(0)
+  })
+}
+
 function getCurrentVersionLabel(): string {
   return `v${app.getVersion()}`
 }
@@ -314,6 +329,7 @@ function ensureAutoUpdaterInitialized(): boolean {
   }
 
   isUpdaterInitialized = true
+  setUpdateProgressWindowCloseHandler(quitFromUpdateWindowClose)
   autoUpdater.logger = {
     info: (...args: unknown[]) => logUpdater('info', serializeLogArgs(args)),
     warn: (...args: unknown[]) => logUpdater('warn', serializeLogArgs(args)),
@@ -508,6 +524,8 @@ export function setupAutoUpdater(window: BrowserWindow): void {
 }
 
 app.on('before-quit', () => {
+  setUpdateProgressWindowCloseHandler(null)
+
   if (updateCheckTimer) {
     clearTimeout(updateCheckTimer)
   }

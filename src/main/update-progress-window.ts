@@ -14,7 +14,9 @@ export type UpdateProgressWindowState = {
 
 let progressWindow: BrowserWindow | null = null
 let isProgressWindowReady = false
+let isProgrammaticClose = false
 let pendingState: UpdateProgressWindowState | null = null
+let updateProgressWindowCloseHandler: (() => void) | null = null
 
 function buildProgressWindowHtml(): string {
     return `<!DOCTYPE html>
@@ -22,7 +24,7 @@ function buildProgressWindowHtml(): string {
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>${APP_DISPLAY_NAME}</title>
+    <title>${APP_DISPLAY_NAME} | Updater</title>
     <style>
       :root {
         color-scheme: dark;
@@ -285,7 +287,7 @@ function getProgressWindow(): BrowserWindow {
         minimizable: false,
         maximizable: false,
         fullscreenable: false,
-        closable: false,
+        closable: true,
         show: false,
         autoHideMenuBar: true,
         backgroundColor: '#07111d',
@@ -298,10 +300,19 @@ function getProgressWindow(): BrowserWindow {
     })
 
     isProgressWindowReady = false
+    progressWindow.on('close', () => {
+        if (isProgrammaticClose) {
+            return
+        }
+
+        updateProgressWindowCloseHandler?.()
+    })
+
     progressWindow.on('closed', () => {
         progressWindow = null
         isProgressWindowReady = false
         pendingState = null
+        isProgrammaticClose = false
     })
 
     progressWindow.once('ready-to-show', () => {
@@ -346,11 +357,17 @@ export function closeUpdateProgressWindow(): void {
         progressWindow = null
         isProgressWindowReady = false
         pendingState = null
+        isProgrammaticClose = false
         return
     }
 
+    isProgrammaticClose = true
     progressWindow.destroy()
     progressWindow = null
     isProgressWindowReady = false
     pendingState = null
+}
+
+export function setUpdateProgressWindowCloseHandler(handler: (() => void) | null): void {
+    updateProgressWindowCloseHandler = handler
 }
