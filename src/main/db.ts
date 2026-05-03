@@ -281,19 +281,12 @@ function rewriteIndexDefinition(definition: string, newIndexName: string): strin
     return rewritten
 }
 
-function buildConstraintName(
-    table: string,
-    constraint: LocalConstraint
+function buildBackupObjectName(
+    holdingTableName: string,
+    objectName: string,
+    objectType: 'constraint' | 'index' | 'sequence'
 ): string {
-    if (constraint.type === 'p' || constraint.type === 'u' || constraint.type === 'x') {
-        return stablePgName(table, constraint.name, 'reordered')
-    }
-
-    return constraint.name
-}
-
-function buildIndexName(table: string, index: IndexMetadata): string {
-    return stablePgName(table, index.name, 'reordered')
+    return stablePgName(holdingTableName, objectName, `${objectType}_backup`)
 }
 
 function parseInteger(value: string | number | null): number | null {
@@ -870,9 +863,8 @@ async function createConstraints(
     filter: (constraint: LocalConstraint) => boolean
 ): Promise<void> {
     for (const constraint of constraints.filter(filter)) {
-        const name = buildConstraintName(session.table, constraint)
         await client.query(
-            `ALTER TABLE ${qualifyName(session.schema, session.table)} ADD CONSTRAINT ${quoteIdentifier(name)} ${constraint.definition}`
+            `ALTER TABLE ${qualifyName(session.schema, session.table)} ADD CONSTRAINT ${quoteIdentifier(constraint.name)} ${constraint.definition}`
         )
     }
 }
@@ -883,8 +875,34 @@ async function createIndexes(
     indexes: IndexMetadata[]
 ): Promise<void> {
     for (const index of indexes) {
-        const sql = rewriteIndexDefinition(index.definition, buildIndexName(session.table, index))
+        const sql = rewriteIndexDefinition(index.definition, index.name)
         await client.query(sql)
+    }
+}
+
+async function renameHoldingTableDependencies(
+    client: Client,
+    schema: string,
+    holdingTableName: string,
+    constraints: LocalConstraint[],
+    indexes: IndexMetadata[]
+): Promise<void> {
+    for (const constraint of constraints.filter(
+        (item) => item.type === 'p' || item.type === 'u' || item.type === 'x'
+    )) {
+        await client.query(
+            `ALTER TABLE ${qualifyName(schema, holdingTableName)} RENAME CONSTRAINT ${quoteIdentifier(constraint.name)} TO ${quoteIdentifier(
+                buildBackupObjectName(holdingTableName, constraint.name, 'constraint')
+            )}`
+        )
+    }
+
+    for (const index of indexes) {
+        await client.query(
+            `ALTER INDEX ${qualifyName(schema, index.name)} RENAME TO ${quoteIdentifier(
+                buildBackupObjectName(holdingTableName, index.name, 'index')
+            )}`
+        )
     }
 }
 
@@ -936,6 +954,7 @@ async function syncSerialSequenceOwnership(
 
 async function renameIdentitySequencesForBackup(
     client: Client,
+    holdingTableName: string,
     originalSequences: SequenceBinding[],
     currentSequences: SequenceBinding[],
     backupOriginal: boolean
@@ -952,7 +971,11 @@ async function renameIdentitySequencesForBackup(
         }
 
         const originalQualified = qualifyName(original.sequenceSchema, original.sequenceName)
-        const backupSequenceName = stablePgName(original.sequenceName, 'backup')
+        const backupSequenceName = buildBackupObjectName(
+            holdingTableName,
+            original.sequenceName,
+            'sequence'
+        )
 
         if (backupOriginal) {
             await client.query(
@@ -1208,6 +1231,13 @@ export async function reorderTableColumns(
             await client.query(
                 `ALTER TABLE ${qualifyName(activeSession.schema, tempTableName)} RENAME TO ${quoteIdentifier(activeSession.table)}`
             )
+            await renameHoldingTableDependencies(
+                client,
+                activeSession.schema,
+                holdingTableName,
+                bundle.constraints,
+                bundle.indexes
+            )
 
             await applyComments(client, activeSession, bundle.meta, orderedColumns)
 
@@ -1219,6 +1249,7 @@ export async function reorderTableColumns(
 
             const currentIdentitySequences = await renameIdentitySequencesForBackup(
                 client,
+                holdingTableName,
                 bundle.sequences,
                 await getOwnedSequences(client, activeSession.schema, activeSession.table),
                 keepBackupTable
