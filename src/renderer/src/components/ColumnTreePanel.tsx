@@ -62,6 +62,22 @@ import {type KeyboardEvent, useEffect, useMemo, useRef, useState} from 'react'
 import TargetDropdown from './TargetDropdown'
 import {CheckboxField} from './ui/checkbox'
 
+const applyTimeFormatter = new Intl.DateTimeFormat(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+})
+
+function formatApplyDuration(durationMs: number): string {
+    const seconds = durationMs / 1000
+
+    if (seconds >= 10) {
+        return `${seconds.toFixed(0)}s`
+    }
+
+    return `${seconds.toFixed(1)}s`
+}
+
 function ColumnTreePanel() {
     const [
         availableDatabases,
@@ -69,6 +85,7 @@ function ColumnTreePanel() {
         columns,
         deleteBackupTableAfterReorder,
         expandedSchemas,
+        lastApplySummary,
         loadingDatabases,
         selectedColumnName,
         selectedConnectionId,
@@ -81,6 +98,7 @@ function ColumnTreePanel() {
             state.columns,
             state.deleteBackupTableAfterReorder,
             state.expandedSchemas,
+            state.lastApplySummary,
             state.loadingConnectionDatabases,
             state.selectedColumnName,
             state.selectedConnectionId,
@@ -134,6 +152,9 @@ function ColumnTreePanel() {
     }))
     const activeDragColumn =
         columns.find((column) => column.name === activeDragColumnName) ?? null
+    const formattedApplyTime = lastApplySummary
+        ? applyTimeFormatter.format(new Date(lastApplySummary.appliedAt))
+        : null
 
     useEffect(() => {
         setTreeSearchQuery('')
@@ -546,6 +567,32 @@ function ColumnTreePanel() {
                     </button>
                 </div>
             </div>
+
+            {lastApplySummary && formattedApplyTime ? (
+                <div
+                    aria-live="polite"
+                    className="border-t border-studio-green/25 bg-[linear-gradient(180deg,rgba(124,227,182,0.16),rgba(31,79,57,0.22))] px-3.5 py-3"
+                >
+                    <div className="flex items-start justify-between gap-3 max-[720px]:flex-col max-[720px]:items-stretch">
+                        <div className="min-w-0">
+                            <div className="text-[11px] uppercase tracking-[0.12em] text-studio-green">
+                                Last apply
+                            </div>
+                            <div className="truncate text-sm font-semibold text-[#e9fff5]">
+                                {lastApplySummary.qualifiedName}
+                            </div>
+                            <div className="mt-1 text-xs text-[#c5f5dd]">
+                                {lastApplySummary.message}
+                            </div>
+                        </div>
+
+                        <div className="flex flex-none flex-col gap-1 rounded-2xl border border-white/10 bg-black/10 px-3 py-2 text-xs text-[#ddfff0]">
+                            <span>{`Applied at ${formattedApplyTime}`}</span>
+                            <span>{`Completed in ${formatApplyDuration(lastApplySummary.durationMs)}`}</span>
+                        </div>
+                    </div>
+                </div>
+            ) : null}
         </section>
     )
 }

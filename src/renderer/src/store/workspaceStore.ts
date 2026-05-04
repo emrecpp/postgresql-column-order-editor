@@ -30,6 +30,13 @@ export interface NoticeState {
     text: string
 }
 
+export interface ApplySummaryState {
+    appliedAt: string
+    durationMs: number
+    message: string
+    qualifiedName: string
+}
+
 export interface WorkspaceState {
     availableConnectionDatabases: string[]
     availableDatabases: string[]
@@ -46,6 +53,7 @@ export interface WorkspaceState {
     dialogOpen: boolean
     draft: ConnectionDraft
     expandedSchemas: string[]
+    lastApplySummary: ApplySummaryState | null
     loadingConnectionDatabases: boolean
     notice: NoticeState | null
     originalOrder: string[]
@@ -71,6 +79,7 @@ const initialWorkspaceState: WorkspaceState = {
     dialogOpen: false,
     draft: cloneDraft(DEFAULT_CONNECTION_DRAFT),
     expandedSchemas: [],
+    lastApplySummary: null,
     loadingConnectionDatabases: false,
     notice: null,
     originalOrder: [],
@@ -111,11 +120,12 @@ function getConnectionDraftSignature(draft: ConnectionDraft): string {
 
 function getResetConnectionStatePatch(): Pick<
     WorkspaceState,
-    'columns' | 'expandedSchemas' | 'originalOrder' | 'selectedColumnName' | 'snapshot'
+    'columns' | 'expandedSchemas' | 'lastApplySummary' | 'originalOrder' | 'selectedColumnName' | 'snapshot'
 > {
     return {
         columns: [],
         expandedSchemas: [],
+        lastApplySummary: null,
         originalOrder: [],
         selectedColumnName: null,
         snapshot: null
@@ -840,7 +850,10 @@ export async function handleConnect(
     const requestSequence = ++runtime.connectRequestSequence
     const busyState = options?.busyState ?? 'connecting'
 
-    setWorkspacePatch({busy: busyState})
+    setWorkspacePatch({
+        busy: busyState,
+        lastApplySummary: null
+    })
 
     try {
         const nextSnapshot = await window.api.connect({
@@ -1080,7 +1093,13 @@ export async function applyReorder(): Promise<void> {
         return
     }
 
-    setWorkspacePatch({busy: 'applying'})
+    const startedAt = new Date()
+    const startedAtMs = performance.now()
+
+    setWorkspacePatch({
+        busy: 'applying',
+        lastApplySummary: null
+    })
 
     try {
         const result = await window.api.reorderColumns({
@@ -1091,6 +1110,14 @@ export async function applyReorder(): Promise<void> {
         })
 
         await handleConnect(state.snapshot.session.id, state.snapshot.target ?? undefined)
+        setWorkspacePatch({
+            lastApplySummary: {
+                appliedAt: startedAt.toISOString(),
+                durationMs: Math.max(0, performance.now() - startedAtMs),
+                message: result.message,
+                qualifiedName: result.qualifiedName
+            }
+        })
         showNotice('success', result.message)
     } catch (error) {
         showNotice('error', getErrorMessage(error))

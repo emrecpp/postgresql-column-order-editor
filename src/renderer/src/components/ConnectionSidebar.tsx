@@ -59,13 +59,32 @@ import {
     Trash2,
     Unplug
 } from 'lucide-react'
-import {type MouseEvent, useEffect, useMemo, useRef, useState} from 'react'
+import {type MouseEvent, type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState} from 'react'
 import GitHubMark from './GitHubMark'
 
 const connectionIconClass =
     'inline-flex h-7 w-7 flex-none items-center justify-center rounded-full border p-0 leading-none transition duration-150'
 const connectionStatusIconClass = 'h-3.5 w-3.5'
 const connectionActionIconClass = 'h-4 w-4'
+const sidebarResizeHandleHeight = 18
+const sidebarMinPanelHeight = 140
+const sidebarDefaultConnectionsRatio = 0.44
+
+function clampConnectionsPanelHeight(height: number, containerHeight: number): number {
+    const maxHeight = containerHeight - sidebarMinPanelHeight - sidebarResizeHandleHeight
+
+    if (maxHeight <= sidebarMinPanelHeight) {
+        return Math.max(
+            0,
+            (containerHeight - sidebarResizeHandleHeight) / 2
+        )
+    }
+
+    return Math.min(
+        Math.max(height, sidebarMinPanelHeight),
+        maxHeight
+    )
+}
 
 function ConnectionSidebar() {
     const [busy, connections, expandedSchemas, selectedConnectionId, snapshot] = useStoreValue(
@@ -81,7 +100,7 @@ function ConnectionSidebar() {
     const connectedConnectionId = useStoreValue(workspaceStore, selectConnectedConnectionId)
     const treeSchemas = snapshot?.databaseTree.schemas ?? []
     const actionsMenuRef = useRef<HTMLDivElement | null>(null)
-    const schemaRefs = useRef<Record<string, HTMLDivElement | null>>({})
+    const sidebarPanelsRef = useRef<HTMLDivElement | null>(null)
     const connectionContextMenuRef = useRef<HTMLDivElement | null>(null)
     const disableConnectionActions =
         busy === 'connecting' || busy === 'applying' || busy === 'saving'
@@ -94,6 +113,9 @@ function ConnectionSidebar() {
     const [actionsMenuOpen, setActionsMenuOpen] = useState(false)
     const [appVersion, setAppVersion] = useState<string | null>(null)
     const [activeDragConnectionId, setActiveDragConnectionId] = useState<string | null>(null)
+    const [connectionsPanelHeight, setConnectionsPanelHeight] = useState<number | null>(null)
+    const [isCompactSidebar, setIsCompactSidebar] = useState(() => window.innerWidth <= 980)
+    const [isResizingPanels, setIsResizingPanels] = useState(false)
     const [tableSearchQuery, setTableSearchQuery] = useState('')
     const [connectionContextMenu, setConnectionContextMenu] = useState<{
         connection: StoredConnection
@@ -123,18 +145,6 @@ function ConnectionSidebar() {
     const activeSchemaName =
         focusedSchemaName ?? snapshot?.target?.schema ?? treeSchemas[0]?.name ?? null
 
-    const orderedSchemas = useMemo(() => {
-        const sourceSchemas = filteredTreeSchemas
-
-        if (!activeSchemaName) {
-            return sourceSchemas
-        }
-
-        const activeSchema = sourceSchemas.find((schemaNode) => schemaNode.name === activeSchemaName)
-        const remainingSchemas = sourceSchemas.filter((schemaNode) => schemaNode.name !== activeSchemaName)
-        return activeSchema ? [activeSchema, ...remainingSchemas] : sourceSchemas
-    }, [activeSchemaName, filteredTreeSchemas])
-
     useEffect(() => {
         window.api
             .getAppInfo()
@@ -160,19 +170,50 @@ function ConnectionSidebar() {
     }, [snapshot?.session.id])
 
     useEffect(() => {
-        if (!activeSchemaName) {
+        const mediaQuery = window.matchMedia('(max-width: 980px)')
+
+        const syncCompactState = (): void => {
+            setIsCompactSidebar(mediaQuery.matches)
+        }
+
+        syncCompactState()
+        mediaQuery.addEventListener('change', syncCompactState)
+
+        return () => {
+            mediaQuery.removeEventListener('change', syncCompactState)
+        }
+    }, [])
+
+    useEffect(() => {
+        if (isCompactSidebar || !sidebarPanelsRef.current) {
             return
         }
 
-        const nextFrame = window.requestAnimationFrame(() => {
-            schemaRefs.current[activeSchemaName]?.scrollIntoView({
-                behavior: 'smooth',
-                block: 'nearest'
-            })
+        const element = sidebarPanelsRef.current
+
+        const syncHeight = (): void => {
+            const nextContainerHeight = element.getBoundingClientRect().height
+
+            setConnectionsPanelHeight((currentHeight) =>
+                clampConnectionsPanelHeight(
+                    currentHeight ?? nextContainerHeight * sidebarDefaultConnectionsRatio,
+                    nextContainerHeight
+                )
+            )
+        }
+
+        syncHeight()
+
+        const resizeObserver = new ResizeObserver(() => {
+            syncHeight()
         })
 
-        return () => window.cancelAnimationFrame(nextFrame)
-    }, [activeSchemaName, expandedSchemas])
+        resizeObserver.observe(element)
+
+        return () => {
+            resizeObserver.disconnect()
+        }
+    }, [isCompactSidebar])
 
     useEffect(() => {
         if (!actionsMenuOpen) {
@@ -309,6 +350,47 @@ function ConnectionSidebar() {
         )
     }
 
+    function handleSidebarResizeStart(event: ReactPointerEvent<HTMLButtonElement>): void {
+        if (isCompactSidebar || !sidebarPanelsRef.current) {
+            return
+        }
+
+        event.preventDefault()
+
+        const element = sidebarPanelsRef.current
+        const previousCursor = document.body.style.cursor
+        const previousUserSelect = document.body.style.userSelect
+
+        const syncHeightFromClientY = (clientY: number): void => {
+            const rect = element.getBoundingClientRect()
+            const nextHeight = clientY - rect.top - sidebarResizeHandleHeight / 2
+
+            setConnectionsPanelHeight(
+                clampConnectionsPanelHeight(nextHeight, rect.height)
+            )
+        }
+
+        setIsResizingPanels(true)
+        document.body.style.cursor = 'row-resize'
+        document.body.style.userSelect = 'none'
+        syncHeightFromClientY(event.clientY)
+
+        const handlePointerMove = (nextEvent: PointerEvent): void => {
+            syncHeightFromClientY(nextEvent.clientY)
+        }
+
+        const stopResizing = (): void => {
+            setIsResizingPanels(false)
+            document.body.style.cursor = previousCursor
+            document.body.style.userSelect = previousUserSelect
+            window.removeEventListener('pointermove', handlePointerMove)
+            window.removeEventListener('pointerup', stopResizing)
+        }
+
+        window.addEventListener('pointermove', handlePointerMove)
+        window.addEventListener('pointerup', stopResizing, {once: true})
+    }
+
     return (
         <aside
             className={`${shellPanelClass} flex min-h-0 flex-col gap-3 p-3.5 max-[720px]:p-3 max-[980px]:overflow-visible`}
@@ -381,8 +463,21 @@ function ConnectionSidebar() {
                 </div>
             </div>
 
-            <div className="grid min-h-0 flex-1 grid-rows-[minmax(180px,0.92fr)_minmax(240px,1.08fr)] gap-3 max-[980px]:grid-cols-1 max-[980px]:grid-rows-none">
-                <section className="flex min-h-0 flex-col gap-2 overflow-hidden">
+            <div
+                className={cn(
+                    'flex min-h-0 flex-1 flex-col',
+                    isCompactSidebar && 'gap-3'
+                )}
+                ref={sidebarPanelsRef}
+            >
+                <section
+                    className="flex min-h-0 flex-col gap-2 overflow-hidden"
+                    style={
+                        !isCompactSidebar && connectionsPanelHeight !== null
+                            ? {height: `${connectionsPanelHeight}px`}
+                            : undefined
+                    }
+                >
                     <div className="flex items-center justify-between gap-3">
                         <div className="text-[11px] tracking-[0.12em] text-studio-muted">CONNECTIONS</div>
                     </div>
@@ -495,7 +590,33 @@ function ConnectionSidebar() {
                     </div>
                 </section>
 
-                <section className="flex min-h-0 flex-col gap-2 overflow-hidden border-t border-studio-border/80 pt-3">
+                {!isCompactSidebar ? (
+                    <button
+                        aria-label="Resize connections and schemas panels"
+                        aria-orientation="horizontal"
+                        className="group relative flex h-[18px] flex-none cursor-row-resize items-center justify-center"
+                        onPointerDown={handleSidebarResizeStart}
+                        title="Drag to resize panels"
+                        type="button"
+                    >
+                        <span className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-studio-border/70 transition duration-150 group-hover:bg-studio-border-strong" />
+                        <span
+                            className={cn(
+                                'relative inline-flex h-5 w-14 items-center justify-center rounded-full border border-studio-border bg-[#101010] text-studio-muted transition duration-150 group-hover:border-studio-border-strong group-hover:text-studio-text',
+                                isResizingPanels && 'border-studio-border-strong text-studio-text'
+                            )}
+                        >
+                            <span className="h-1 w-6 rounded-full bg-current/70" />
+                        </span>
+                    </button>
+                ) : null}
+
+                <section
+                    className={cn(
+                        'flex min-h-0 flex-1 flex-col gap-2 overflow-hidden',
+                        isCompactSidebar && 'border-t border-studio-border/80 pt-3'
+                    )}
+                >
                     <div className="flex items-center justify-between gap-3">
                         <div className="text-[11px] uppercase tracking-[0.12em] text-studio-muted">
                             Schemas & Tables
@@ -535,85 +656,79 @@ function ConnectionSidebar() {
                                     scrollbarClass
                                 )}
                             >
-                                {orderedSchemas.length === 0 ? (
+                                {filteredTreeSchemas.length === 0 ? (
                                     <div className="grid min-h-24 place-items-center rounded-2xl border border-studio-border bg-studio-panel-soft p-5 text-center text-studio-muted">
                                         No matching schemas or tables found.
                                     </div>
-                                ) : orderedSchemas.map((schemaNode) => {
-                                const isExpanded = searchActive || expandedSchemas.includes(schemaNode.name)
-                                const isFocused = activeSchemaName === schemaNode.name
+                                ) : filteredTreeSchemas.map((schemaNode) => {
+                                    const isExpanded = searchActive || expandedSchemas.includes(schemaNode.name)
+                                    const isFocused = activeSchemaName === schemaNode.name
 
-                                return (
-                                    <div
-                                        className="flex flex-col gap-1.5"
-                                        key={schemaNode.name}
-                                        ref={(element) => {
-                                            schemaRefs.current[schemaNode.name] = element
-                                        }}
-                                    >
-                                        <button
-                                            className={cn(
-                                                'flex min-h-10 w-full items-center gap-2.5 rounded-2xl border px-3 py-2.5 text-left font-semibold transition duration-150 hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0',
-                                                isFocused
-                                                    ? 'border-studio-amber/30 bg-studio-gold'
-                                                    : 'border-studio-amber/15 bg-[linear-gradient(180deg,rgba(255,209,102,0.06),rgba(255,209,102,0.02))]'
-                                            )}
-                                            disabled={disableTargetTreeActions}
-                                            onClick={() => {
-                                                setFocusedSchemaName(schemaNode.name)
+                                    return (
+                                        <div className="flex flex-col gap-1.5" key={schemaNode.name}>
+                                            <button
+                                                className={cn(
+                                                    'flex min-h-10 w-full items-center gap-2.5 rounded-2xl border px-3 py-2.5 text-left font-semibold transition duration-150 hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0',
+                                                    isFocused
+                                                        ? 'border-studio-amber/30 bg-studio-gold'
+                                                        : 'border-studio-amber/15 bg-[linear-gradient(180deg,rgba(255,209,102,0.06),rgba(255,209,102,0.02))]'
+                                                )}
+                                                disabled={disableTargetTreeActions}
+                                                onClick={() => {
+                                                    setFocusedSchemaName(schemaNode.name)
 
-                                                if (!searchActive) {
-                                                    toggleSchema(schemaNode.name)
-                                                }
-                                            }}
-                                            type="button"
-                                        >
-                                            <span className="inline-flex w-4 flex-none items-center justify-center text-studio-amber">
-                                                {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                                            </span>
-
-                                            <div className="flex min-w-0 flex-col gap-0.5">
-                                                <span className="truncate text-studio-amber">{schemaNode.name}</span>
-                                                <span className="text-xs text-studio-amber-soft">
-                                                    {schemaNode.tables.length === schemaNode.totalTableCount
-                                                        ? `${schemaNode.totalTableCount} tables`
-                                                        : `${schemaNode.tables.length} / ${schemaNode.totalTableCount} tables`}
+                                                    if (!searchActive) {
+                                                        toggleSchema(schemaNode.name)
+                                                    }
+                                                }}
+                                                type="button"
+                                            >
+                                                <span className="inline-flex w-4 flex-none items-center justify-center text-studio-amber">
+                                                    {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
                                                 </span>
-                                            </div>
-                                        </button>
 
-                                        {searchActive || isExpanded ? (
-                                            <div className="flex flex-col gap-1.5 pl-[18px]">
-                                                {schemaNode.tables.map((table) => {
-                                                    const isActive =
-                                                        snapshot.target?.schema === schemaNode.name &&
-                                                        snapshot.target.table === table
+                                                <div className="flex min-w-0 flex-col gap-0.5">
+                                                    <span className="truncate text-studio-amber">{schemaNode.name}</span>
+                                                    <span className="text-xs text-studio-amber-soft">
+                                                        {schemaNode.tables.length === schemaNode.totalTableCount
+                                                            ? `${schemaNode.totalTableCount} tables`
+                                                            : `${schemaNode.tables.length} / ${schemaNode.totalTableCount} tables`}
+                                                    </span>
+                                                </div>
+                                            </button>
 
-                                                    return (
-                                                        <button
-                                                            className={cn(
-                                                                'flex min-h-10 w-full items-center gap-2.5 rounded-2xl border px-3 py-2.5 text-left text-studio-muted-strong transition duration-150 hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0',
-                                                                isActive
-                                                                    ? 'border-studio-border-strong bg-studio-panel-strong text-studio-text'
-                                                                    : 'border-studio-border bg-studio-panel-soft'
-                                                            )}
-                                                            disabled={disableTargetTreeActions}
-                                                            key={`${schemaNode.name}.${table}`}
-                                                            onClick={() => handleTableSelect(schemaNode.name, table)}
-                                                            type="button"
-                                                        >
-                                                            <Table2 size={13} />
-                                                            <div className="flex min-w-0 flex-col gap-0.5">
-                                                                <span className="truncate">{table}</span>
-                                                                <span className="text-xs text-studio-muted">{schemaNode.name}</span>
-                                                            </div>
-                                                        </button>
-                                                    )
-                                                })}
-                                            </div>
-                                        ) : null}
-                                    </div>
-                                )
+                                            {searchActive || isExpanded ? (
+                                                <div className="flex flex-col gap-1.5 pl-[18px]">
+                                                    {schemaNode.tables.map((table) => {
+                                                        const isActive =
+                                                            snapshot.target?.schema === schemaNode.name &&
+                                                            snapshot.target.table === table
+
+                                                        return (
+                                                            <button
+                                                                className={cn(
+                                                                    'flex min-h-10 w-full items-center gap-2.5 rounded-2xl border px-3 py-2.5 text-left text-studio-muted-strong transition duration-150 hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0',
+                                                                    isActive
+                                                                        ? 'border-studio-border-strong bg-studio-panel-strong text-studio-text'
+                                                                        : 'border-studio-border bg-studio-panel-soft'
+                                                                )}
+                                                                disabled={disableTargetTreeActions}
+                                                                key={`${schemaNode.name}.${table}`}
+                                                                onClick={() => handleTableSelect(schemaNode.name, table)}
+                                                                type="button"
+                                                            >
+                                                                <Table2 size={13} />
+                                                                <div className="flex min-w-0 flex-col gap-0.5">
+                                                                    <span className="truncate">{table}</span>
+                                                                    <span className="text-xs text-studio-muted">{schemaNode.name}</span>
+                                                                </div>
+                                                            </button>
+                                                        )
+                                                    })}
+                                                </div>
+                                            ) : null}
+                                        </div>
+                                    )
                                 })}
                             </div>
                         </div>
